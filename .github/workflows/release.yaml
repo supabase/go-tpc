@@ -4,9 +4,15 @@ on:
     tags: ['v*']
     branches: [ master ]
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/setup-go@be3c94b385c4f180051c996d336f57a34c397495 # v3.6.1
         with:
@@ -40,23 +46,14 @@ jobs:
           tar -zcf go-tpc_latest_darwin_amd64.tar.gz -C dist/go-tpc_darwin_amd64_v1 go-tpc
           tar -zcf go-tpc_latest_darwin_arm64.tar.gz -C dist/go-tpc_darwin_arm64_v8.0 go-tpc
 
-      - name: Release latest build
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v0.1.15
-        if: github.event.ref == 'refs/heads/master'
-        with:
-          name: Latest Build
-          tag_name: latest-${{ github.sha }}
-          files: |
-            *.tar.gz
-      - name: Clean legacy latest releases
-        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
-        if: github.event.ref == 'refs/heads/master'
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const releases = (await github.rest.repos.listReleases({ owner, repo })).data.filter(r => r.draft && r.tag_name.startsWith('latest'));
-            for (const r of releases) { await github.rest.repos.deleteRelease({ owner, repo, release_id: r.id }).catch(_ => {}); }
-      - name: Clean legacy latest tags
+      - name: Update latest release
         if: github.event.ref == 'refs/heads/master'
         run: |
-          git tag -l | grep latest | grep -v latest-${{ github.sha }} | xargs -I{} git push -d origin {} || true
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest \
+            --prerelease \
+            --title "Latest Build (${{ github.sha }})" \
+            --notes "Development build: \`${{ github.sha }}\`" \
+            *.tar.gz
+        env:
+          GH_TOKEN: ${{ github.token }}
