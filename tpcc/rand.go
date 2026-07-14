@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pingcap/go-tpc/pkg/util"
+	"github.com/supabase/go-tpc/pkg/util"
 )
 
 // convert the default mysql query to pq format

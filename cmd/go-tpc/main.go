@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pingcap/go-tpc/pkg/util"
+	"github.com/supabase/go-tpc/pkg/util"
 	"github.com/spf13/cobra"
 	_ "go.uber.org/automaxprocs"
 

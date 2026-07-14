@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pingcap/go-tpc/pkg/util"
-	"github.com/pingcap/go-tpc/rawsql"
+	"github.com/supabase/go-tpc/pkg/util"
+	"github.com/supabase/go-tpc/rawsql"
 	"github.com/spf13/cobra"
 )
 

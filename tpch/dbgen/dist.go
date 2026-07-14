@@ -1,6 +1,6 @@
 package dbgen
 
-import "github.com/pingcap/go-tpc/tpch/dbgen/dist"
+import "github.com/supabase/go-tpc/tpch/dbgen/dist"
 
 var (
 	nations      distribution

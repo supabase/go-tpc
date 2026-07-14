@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pingcap/go-tpc/pkg/measurement"
-	replayer "github.com/pingcap/go-tpc/pkg/plan-replayer"
-	"github.com/pingcap/go-tpc/pkg/util"
-	"github.com/pingcap/go-tpc/pkg/workload"
+	"github.com/supabase/go-tpc/pkg/measurement"
+	replayer "github.com/supabase/go-tpc/pkg/plan-replayer"
+	"github.com/supabase/go-tpc/pkg/util"
+	"github.com/supabase/go-tpc/pkg/workload"
 )
 
 type contextKey string

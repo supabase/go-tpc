@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/HdrHistogram/hdrhistogram-go"
-	"github.com/pingcap/go-tpc/pkg/util"
+	"github.com/supabase/go-tpc/pkg/util"
 )
 
 type Histogram struct {

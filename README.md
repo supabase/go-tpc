@@ -9,19 +9,19 @@ You can use one of the three approaches
 ### Install using script(recommend)
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/pingcap/go-tpc/master/install.sh | sh
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/supabase/go-tpc/master/install.sh | sh
 ```
 
 And then open a new terminal to try `go-tpc`
 
 ### Download binary
 
-You can download the pre-built binary [here](https://github.com/pingcap/go-tpc/releases) and then gunzip it
+You can download the pre-built binary [here](https://github.com/supabase/go-tpc/releases) and then gunzip it
 
 ### Build from source
 
 ```bash
-git clone https://github.com/pingcap/go-tpc.git
+git clone https://github.com/supabase/go-tpc.git
 cd go-tpc
 make build
 ```
@@ -165,7 +165,6 @@ If you want to import tpcc data into TiDB, please refer to [import-to-tidb](docs
 
 2. Then uses `go-tpc ch prepare` to prepare the AP part schema and data
 
-A detail example to run CH workload on TiDB can be refered to [TiDB Doc](https://docs.pingcap.com/tidb/dev/benchmark-tidb-using-ch)
 
 ##### TiDB & MySQL
 ```bash

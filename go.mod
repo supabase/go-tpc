@@ -1,4 +1,4 @@
-module github.com/pingcap/go-tpc
+module github.com/supabase/go-tpc
 
 go 1.25.0
 

@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/pingcap/go-tpc/pkg/util"
-	"github.com/pingcap/go-tpc/tpch"
+	"github.com/supabase/go-tpc/pkg/util"
+	"github.com/supabase/go-tpc/tpch"
 	"github.com/spf13/cobra"
 )
 
