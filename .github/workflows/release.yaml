@@ -8,16 +8,16 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v3
+      - uses: actions/setup-go@be3c94b385c4f180051c996d336f57a34c397495 # v3.6.1
         with:
           go-version: 1.25.x
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.7.0
         with:
           fetch-depth: 0
 
       - name: Release
         if: github.event.ref != 'refs/heads/master'
-        uses: goreleaser/goreleaser-action@v1
+        uses: goreleaser/goreleaser-action@6e37040623d14330555c7be1603a9182cf92d32a # v1.5.1
         with:
           version: latest
           args: release --clean
@@ -26,7 +26,7 @@ jobs:
 
       - name: Build
         if: github.event.ref == 'refs/heads/master'
-        uses: goreleaser/goreleaser-action@v1
+        uses: goreleaser/goreleaser-action@6e37040623d14330555c7be1603a9182cf92d32a # v1.5.1
         with:
           version: latest
           args: build --snapshot --clean
@@ -41,7 +41,7 @@ jobs:
           tar -zcf go-tpc_latest_darwin_arm64.tar.gz -C dist/go-tpc_darwin_arm64_v8.0 go-tpc
 
       - name: Release latest build
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v0.1.15
         if: github.event.ref == 'refs/heads/master'
         with:
           name: Latest Build
@@ -49,7 +49,7 @@ jobs:
           files: |
             *.tar.gz
       - name: Clean legacy latest releases
-        uses: actions/github-script@v6
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
         if: github.event.ref == 'refs/heads/master'
         with:
           script: |
