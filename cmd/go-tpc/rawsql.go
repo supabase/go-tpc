@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/supabase/go-tpc/pkg/util"
 	"github.com/supabase/go-tpc/rawsql"
-	"github.com/spf13/cobra"
 )
 
 var (

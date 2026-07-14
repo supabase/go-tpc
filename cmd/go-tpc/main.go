@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/supabase/go-tpc/pkg/util"
 	"github.com/spf13/cobra"
+	"github.com/supabase/go-tpc/pkg/util"
 	_ "go.uber.org/automaxprocs"
 
 	// mysql package

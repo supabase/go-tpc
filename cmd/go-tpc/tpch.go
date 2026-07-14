@@ -8,9 +8,9 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"github.com/supabase/go-tpc/pkg/util"
 	"github.com/supabase/go-tpc/tpch"
-	"github.com/spf13/cobra"
 )
 
 var tpchConfig tpch.Config
