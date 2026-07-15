@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/HdrHistogram/hdrhistogram-go v1.3.0
-	github.com/go-sql-driver/mysql v1.9.3
+	github.com/go-sql-driver/mysql v1.10.0
 	github.com/jedib0t/go-pretty v4.3.0+incompatible
 	github.com/lib/pq v1.12.3
 	github.com/olekukonko/tablewriter v1.1.4
@@ -17,7 +17,7 @@ require (
 )
 
 require (
-	filippo.io/edwards25519 v1.1.1 // indirect
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/clipperhouse/displaywidth v0.10.0 // indirect
