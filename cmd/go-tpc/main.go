@@ -9,6 +9,7 @@ import (
 	sqldrv "database/sql/driver"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -125,9 +126,14 @@ func newDB(targets []string, driver string, user string, password string, dbName
 				panic("postgresql driver doesn't support TLS yet")
 			}
 
+			params, err := applyDirectSSLWorkaround(connParams)
+			if err != nil {
+				panic(err)
+			}
+
 			dsn := fmt.Sprintf("postgres://%s:%s@%s/%s", user, password, addr, dbName)
-			if len(connParams) > 0 {
-				dsn = dsn + "?" + connParams
+			if len(params) > 0 {
+				dsn = dsn + "?" + params
 			}
 			names[i] = dsn
 			drv = &pq.Driver{}
@@ -147,6 +153,46 @@ func newDB(targets []string, driver string, user string, password string, dbName
 	}
 	sql.Register(drvName, &MuxDriver{instances: names, internal: drv})
 	return sql.Open(drvName, "")
+}
+
+// applyDirectSSLWorkaround rewrites connParams so a --conn-params
+// sslnegotiation=direct request actually works against a server that
+// enforces direct-only SSL negotiation.
+//
+// PostgreSQL 17+ requires the ALPN "postgresql" protocol extension during a
+// direct SSL handshake. lib/pq (github.com/lib/pq) understands
+// sslnegotiation=direct enough to skip the legacy plaintext SSLRequest
+// exchange, but it never sets that extension, so servers that require direct
+// negotiation reject the connection. Until lib/pq sets the extension itself
+// (see the upstream issue filed against github.com/lib/pq), register a TLS
+// config with the extension set and route the connection through it via
+// lib/pq's sslmode=pqgo-<name> mechanism.
+//
+// connParams is returned unchanged when sslnegotiation isn't "direct".
+func applyDirectSSLWorkaround(connParams string) (string, error) {
+	values, err := url.ParseQuery(connParams)
+	if err != nil {
+		return "", fmt.Errorf("parse --conn-params: %w", err)
+	}
+	if values.Get("sslnegotiation") != "direct" {
+		return connParams, nil
+	}
+
+	sslmode := values.Get("sslmode")
+	tlsConf := &tls.Config{
+		NextProtos: []string{"postgresql"},
+		// lib/pq's verify-ca semantics (verify the certificate chain but not
+		// the hostname) aren't reachable through sslmode=pqgo-<name>, so
+		// verify-ca is treated the same as verify-full here: full
+		// verification, including the hostname.
+		InsecureSkipVerify: sslmode == "require",
+	}
+	name := "direct-" + sslmode
+	if err := pq.RegisterTLSConfig(name, tlsConf); err != nil {
+		return "", fmt.Errorf("register TLS config for sslnegotiation=direct: %w", err)
+	}
+	values.Set("sslmode", "pqgo-"+name)
+	return values.Encode(), nil
 }
 
 func closeDB() {
