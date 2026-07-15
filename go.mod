@@ -3,7 +3,7 @@ module github.com/supabase/go-tpc
 go 1.25.0
 
 require (
-	github.com/HdrHistogram/hdrhistogram-go v1.2.0
+	github.com/HdrHistogram/hdrhistogram-go v1.3.0
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/jedib0t/go-pretty v4.3.0+incompatible
 	github.com/lib/pq v1.12.3
