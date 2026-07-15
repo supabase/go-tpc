@@ -12,9 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/pingcap/go-tpc/ch"
-	"github.com/pingcap/go-tpc/pkg/workload"
-	"github.com/pingcap/go-tpc/tpcc"
+	"github.com/supabase/go-tpc/ch"
+	"github.com/supabase/go-tpc/pkg/workload"
+	"github.com/supabase/go-tpc/tpcc"
 )
 
 var chConfig ch.Config

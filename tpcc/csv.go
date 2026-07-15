@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pingcap/go-tpc/pkg/sink"
-	"github.com/pingcap/go-tpc/pkg/util"
-	"github.com/pingcap/go-tpc/pkg/workload"
+	"github.com/supabase/go-tpc/pkg/sink"
+	"github.com/supabase/go-tpc/pkg/util"
+	"github.com/supabase/go-tpc/pkg/workload"
 )
 
 type CSVWorkLoader struct {

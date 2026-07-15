@@ -13,7 +13,7 @@ if [ -z "$os" ]; then
     exit 1
 fi
 
-binary_url="https://github.com/pingcap/go-tpc/releases/download/v${version}/go-tpc_${version}_${os}_amd64.tar.gz"
+binary_url="https://github.com/supabase/go-tpc/releases/download/v${version}/go-tpc_${version}_${os}_amd64.tar.gz"
 
 case $(uname -m) in
     amd64|x86_64) arch=amd64 ;;

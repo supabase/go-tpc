@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/pingcap/go-tpc/pkg/sink"
-	"github.com/pingcap/go-tpc/tpch/dbgen"
+	"github.com/supabase/go-tpc/pkg/sink"
+	"github.com/supabase/go-tpc/tpch/dbgen"
 )
 
 type sqlLoader struct {

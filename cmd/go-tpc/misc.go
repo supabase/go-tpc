@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pingcap/go-tpc/pkg/workload"
+	"github.com/supabase/go-tpc/pkg/workload"
 )
 
 func checkPrepare(ctx context.Context, w workload.Workloader) {

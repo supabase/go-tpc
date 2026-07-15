@@ -9,11 +9,11 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/pingcap/go-tpc/pkg/measurement"
-	"github.com/pingcap/go-tpc/pkg/workload"
-	"github.com/pingcap/go-tpc/tpcc"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
+	"github.com/supabase/go-tpc/pkg/measurement"
+	"github.com/supabase/go-tpc/pkg/workload"
+	"github.com/supabase/go-tpc/tpcc"
 )
 
 var tpccConfig tpcc.Config
