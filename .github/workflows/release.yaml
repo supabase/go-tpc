@@ -23,7 +23,7 @@ jobs:
 
       - name: Release
         if: github.event.ref != 'refs/heads/master'
-        uses: goreleaser/goreleaser-action@6e37040623d14330555c7be1603a9182cf92d32a # v1.5.1
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           version: latest
           args: release --clean
@@ -32,7 +32,7 @@ jobs:
 
       - name: Build
         if: github.event.ref == 'refs/heads/master'
-        uses: goreleaser/goreleaser-action@6e37040623d14330555c7be1603a9182cf92d32a # v1.5.1
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           version: latest
           args: build --snapshot --clean
