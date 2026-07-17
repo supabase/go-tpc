@@ -66,6 +66,19 @@ func genNewOrderInsertOrderLineSQL(cnt int) string {
 	return buf.String()
 }
 
+func newOrderSelectStockArgs(items []orderItem) []interface{} {
+	args := make([]interface{}, len(items)*2)
+	for i := range items {
+		args[i*2] = items[i].olSupplyWID
+		args[i*2+1] = items[i].olIID
+	}
+	return args
+}
+
+func newOrderUpdateStockArgs(item *orderItem) []interface{} {
+	return []interface{}{item.sQuantity, item.olQuantity, item.remoteWarehouse, item.olIID, item.olSupplyWID}
+}
+
 func (w *Workloader) otherWarehouse(ctx context.Context, warehouse int) int {
 	s := getTPCCState(ctx)
 
@@ -242,11 +255,7 @@ func (w *Workloader) runNewOrder(ctx context.Context, thread int) error {
 
 	// Process 7
 	selectStockSQL := newOrderSelectStockSQLs[len(items)]
-	selectStockArgs := make([]interface{}, len(items)*2)
-	for i := range items {
-		selectStockArgs[i*2] = d.wID
-		selectStockArgs[i*2+1] = items[i].olIID
-	}
+	selectStockArgs := newOrderSelectStockArgs(items)
 	stockRows, err := s.newOrderStmts[selectStockSQL].QueryContext(ctx, selectStockArgs...)
 	if err != nil {
 		return fmt.Errorf("exec %s failed %v", selectStockSQL, err)
@@ -279,12 +288,12 @@ func (w *Workloader) runNewOrder(ctx context.Context, thread int) error {
 	for i := 0; i < d.oOlCnt; i++ {
 		item := &items[i]
 		if !item.foundInStock {
-			return fmt.Errorf("item (%d, %d) not found in stock", d.wID, item.olIID)
+			return fmt.Errorf("item (%d, %d) not found in stock", item.olSupplyWID, item.olIID)
 		}
 		if item.olIID < 0 {
 			return nil
 		}
-		if _, err = s.newOrderStmts[newOrderUpdateStock].ExecContext(ctx, item.sQuantity, item.olQuantity, item.remoteWarehouse, item.olIID, d.wID); err != nil {
+		if _, err = s.newOrderStmts[newOrderUpdateStock].ExecContext(ctx, newOrderUpdateStockArgs(item)...); err != nil {
 			return fmt.Errorf("exec %s failed %v", newOrderUpdateStock, err)
 		}
 	}
