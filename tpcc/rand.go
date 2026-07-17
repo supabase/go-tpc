@@ -127,8 +127,8 @@ func randCLastSyllables(n int, b *util.BufAllocator) string {
 func init() {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	cLoad = r.Intn(256)
-	cItemID = r.Intn(1024)
-	cCustomerID = r.Intn(8192)
+	cCustomerID = r.Intn(1024) // A=1023 for C_ID
+	cItemID = r.Intn(8192)     // A=8191 for OL_I_ID
 }
 
 // refer 4.3.2.3 and 2.1.6
@@ -138,10 +138,10 @@ func randCLast(r *rand.Rand, b *util.BufAllocator) string {
 
 // refer 2.1.6
 func randCustomerID(r *rand.Rand) int {
-	return ((r.Intn(1024) | (r.Intn(3000) + 1) + cCustomerID) % 3000) + 1
+	return (((r.Intn(1024) | (r.Intn(3000) + 1)) + cCustomerID) % 3000) + 1
 }
 
 // refer 2.1.6
 func randItemID(r *rand.Rand) int {
-	return ((r.Intn(8190) | (r.Intn(100000) + 1) + cItemID) % 100000) + 1
+	return (((r.Intn(8192) | (r.Intn(100000) + 1)) + cItemID) % 100000) + 1
 }
