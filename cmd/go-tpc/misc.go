@@ -9,32 +9,38 @@ import (
 	"github.com/supabase/go-tpc/pkg/workload"
 )
 
-func checkPrepare(ctx context.Context, w workload.Workloader) {
+func checkPrepare(ctx context.Context, w workload.Workloader) error {
 	// skip preparation check in csv case
 	if w.Name() == "tpcc-csv" {
 		fmt.Println("Skip preparing checking. Please load CSV data into database and check later.")
-		return
+		return nil
 	}
 	if w.Name() == "tpcc" && tpccConfig.NoCheck {
-		return
+		return nil
 	}
 
+	errCh := make(chan error, threads)
 	var wg sync.WaitGroup
 	wg.Add(threads)
 	for i := 0; i < threads; i++ {
 		go func(index int) {
 			defer wg.Done()
 
-			ctx = w.InitThread(ctx, index)
+			ctx := w.InitThread(ctx, index)
 			defer w.CleanupThread(ctx, index)
 
 			if err := w.CheckPrepare(ctx, index); err != nil {
-				fmt.Printf("check prepare failed, err %v\n", err)
-				return
+				errCh <- err
 			}
 		}(i)
 	}
 	wg.Wait()
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
 }
 
 func execute(timeoutCtx context.Context, w workload.Workloader, action string, threads, index int) error {
@@ -101,7 +107,7 @@ func execute(timeoutCtx context.Context, w workload.Workloader, action string, t
 	return nil
 }
 
-func executeWorkload(ctx context.Context, w workload.Workloader, threads int, action string) {
+func executeWorkload(ctx context.Context, w workload.Workloader, threads int, action string) error {
 	var wg sync.WaitGroup
 	wg.Add(threads)
 
@@ -170,26 +176,41 @@ func executeWorkload(ctx context.Context, w workload.Workloader, threads int, ac
 		}()
 	}
 
+	errCh := make(chan error, threads)
 	for i := 0; i < threads; i++ {
 		go func(index int) {
 			defer wg.Done()
 			if err := execute(ctx, w, action, threads, index); err != nil {
-				if action == "prepare" {
-					panic(fmt.Sprintf("a fatal occurred when preparing data: %v", err))
+				if !silence {
+					fmt.Printf("execute %s failed, err %v\n", action, err)
 				}
-				fmt.Printf("execute %s failed, err %v\n", action, err)
-				return
+				errCh <- err
 			}
 		}(i)
 	}
 
 	wg.Wait()
 
-	if action == "prepare" {
-		// For prepare, we must check the data consistency after all prepare finished
-		checkPrepare(ctx, w)
+	var workerErr error
+	select {
+	case err := <-errCh:
+		workerErr = err
+	default:
+	}
+
+	var checkErr error
+	if action == "prepare" && workerErr == nil {
+		// Only run the post-prepare consistency check when every prepare worker
+		// succeeded; checking data a failed worker left incomplete would just
+		// produce confusing secondary errors that obscure the real failure.
+		checkErr = checkPrepare(ctx, w)
 	}
 	outputCancel()
 
 	<-ch
+
+	if workerErr != nil {
+		return workerErr
+	}
+	return checkErr
 }
