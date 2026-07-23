@@ -74,6 +74,10 @@ type Config struct {
 	// whether to involve wait times(keying time&thinking time)
 	Wait bool
 
+	// print a line to stderr when a transaction is rolled back due to a
+	// transient conflict (deadlock/serialization failure)
+	Debug bool
+
 	MaxMeasureLatency time.Duration
 
 	// for prepare sub-command only
@@ -345,6 +349,18 @@ func (w *Workloader) Run(ctx context.Context, threadID int) (err error) {
 	err = txn.action(ctx, threadID)
 
 	w.rtMeasurement.Measure(txn.name, time.Now().Sub(start), err)
+
+	// The TPC-C spec doesn't say how to handle deadlocks or serialization
+	// conflicts. It only says a transaction that isn't committed doesn't
+	// count as completed. We treat these as transient: the transaction
+	// already rolled back (see defer tx.Rollback() above), so we just move
+	// on to the next transaction instead of failing the whole run.
+	if isTransactionConflict(err) {
+		if w.cfg.Debug {
+			util.StdErrLogger.Printf("[tpcc] %s transaction rolled back due to a transient conflict (SQLSTATE %s), continuing: %v", txn.name, sqlState(err), err)
+		}
+		err = nil
+	}
 
 	// 5.2.5.4, For each transaction type, think time is taken independently from a negative exponential distribution.
 	// Think time, T t , is computed from the following equation: Tt = -log(r) * (mean think time),

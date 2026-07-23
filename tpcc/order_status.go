@@ -55,7 +55,7 @@ func (w *Workloader) runOrderStatus(ctx context.Context, thread int) error {
 		//	WHERE c_last=:c_last AND c_d_id=:d_id AND c_w_id=:w_id
 		var nameCnt int
 		if err := s.orderStatusStmts[orderStatusSelectCustomerCntByLast].QueryRowContext(ctx, d.wID, d.dID, d.cLast).Scan(&nameCnt); err != nil {
-			return fmt.Errorf("exec %s failed %v", orderStatusSelectCustomerCntByLast, err)
+			return fmt.Errorf("exec %s failed %w", orderStatusSelectCustomerCntByLast, err)
 		}
 		if nameCnt%2 == 1 {
 			nameCnt++
@@ -63,7 +63,7 @@ func (w *Workloader) runOrderStatus(ctx context.Context, thread int) error {
 
 		rows, err := s.orderStatusStmts[orderStatusSelectCustomerByLast].QueryContext(ctx, d.wID, d.dID, d.cLast)
 		if err != nil {
-			return fmt.Errorf("exec %s failed %v", orderStatusSelectCustomerByLast, err)
+			return fmt.Errorf("exec %s failed %w", orderStatusSelectCustomerByLast, err)
 		}
 		for i := 0; i < nameCnt/2 && rows.Next(); i++ {
 			if err := rows.Scan(&d.cBalance, &d.cFirst, &d.cMiddle, &d.cID); err != nil {
@@ -78,7 +78,7 @@ func (w *Workloader) runOrderStatus(ctx context.Context, thread int) error {
 		}
 	} else {
 		if err := s.orderStatusStmts[orderStatusSelectCustomerByID].QueryRowContext(ctx, d.wID, d.dID, d.cID).Scan(&d.cBalance, &d.cFirst, &d.cMiddle, &d.cLast); err != nil {
-			return fmt.Errorf("exec %s failed %v", orderStatusSelectCustomerByID, err)
+			return fmt.Errorf("exec %s failed %w", orderStatusSelectCustomerByID, err)
 		}
 	}
 
@@ -88,7 +88,7 @@ func (w *Workloader) runOrderStatus(ctx context.Context, thread int) error {
 
 	// refer 2.6.2.2 - select the latest order
 	if err := s.orderStatusStmts[orderStatusSelectLatestOrder].QueryRowContext(ctx, d.wID, d.dID, d.cID).Scan(&d.oID, &d.oCarrierID, &d.oEntryD); err != nil {
-		return fmt.Errorf("exec %s failed %v", orderStatusSelectLatestOrder, err)
+		return fmt.Errorf("exec %s failed %w", orderStatusSelectLatestOrder, err)
 	}
 
 	// SQL DECLARE c_line CURSOR FOR SELECT ol_i_id, ol_supply_w_id, ol_quantity,
@@ -98,7 +98,7 @@ func (w *Workloader) runOrderStatus(ctx context.Context, thread int) error {
 	// OPEN c_line;
 	rows, err := s.orderStatusStmts[orderStatusSelectOrderLine].QueryContext(ctx, d.wID, d.dID, d.oID)
 	if err != nil {
-		return fmt.Errorf("exec %s failed %v", orderStatusSelectOrderLine, err)
+		return fmt.Errorf("exec %s failed %w", orderStatusSelectOrderLine, err)
 	}
 	defer rows.Close()
 

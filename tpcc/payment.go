@@ -96,43 +96,43 @@ func (w *Workloader) runPayment(ctx context.Context, thread int) error {
 
 	// Process 1
 	if _, err := s.paymentStmts[paymentUpdateDistrict].ExecContext(ctx, d.hAmount, d.wID, d.dID); err != nil {
-		return fmt.Errorf("exec %s failed %v", paymentUpdateDistrict, err)
+		return fmt.Errorf("exec %s failed %w", paymentUpdateDistrict, err)
 	}
 
 	// Process 2
 	if err := s.paymentStmts[paymentSelectDistrict].QueryRowContext(ctx, d.wID, d.dID).Scan(&d.dStreet1, &d.dStreet2,
 		&d.dCity, &d.dState, &d.dZip, &d.dName); err != nil {
-		return fmt.Errorf("exec %s failed %v", paymentSelectDistrict, err)
+		return fmt.Errorf("exec %s failed %w", paymentSelectDistrict, err)
 	}
 
 	// Process 3
 	if _, err := s.paymentStmts[paymentUpdateWarehouse].ExecContext(ctx, d.hAmount, d.wID); err != nil {
-		return fmt.Errorf("exec %s failed %v", paymentUpdateWarehouse, err)
+		return fmt.Errorf("exec %s failed %w", paymentUpdateWarehouse, err)
 	}
 
 	// Process 4
 	if err := s.paymentStmts[paymentSelectWarehouse].QueryRowContext(ctx, d.wID).Scan(&d.wStreet1, &d.wStreet2,
 		&d.wCity, &d.wState, &d.wZip, &d.wName); err != nil {
-		return fmt.Errorf("exec %s failed %v", paymentSelectDistrict, err)
+		return fmt.Errorf("exec %s failed %w", paymentSelectDistrict, err)
 	}
 
 	if d.cID == 0 {
 		// Process 5
 		rows, err := s.paymentStmts[paymentSelectCustomerListByLast].QueryContext(ctx, d.cWID, d.cDID, d.cLast)
 		if err != nil {
-			return fmt.Errorf("exec %s failed %v", paymentSelectCustomerListByLast, err)
+			return fmt.Errorf("exec %s failed %w", paymentSelectCustomerListByLast, err)
 		}
 		defer rows.Close()
 		var ids []int
 		for rows.Next() {
 			var id int
 			if err = rows.Scan(&id); err != nil {
-				return fmt.Errorf("exec %s failed %v", paymentSelectCustomerListByLast, err)
+				return fmt.Errorf("exec %s failed %w", paymentSelectCustomerListByLast, err)
 			}
 			ids = append(ids, id)
 		}
 		if err := rows.Err(); err != nil {
-			return fmt.Errorf("exec %s failed %v", paymentSelectCustomerListByLast, err)
+			return fmt.Errorf("exec %s failed %w", paymentSelectCustomerListByLast, err)
 		}
 		if len(ids) == 0 {
 			return fmt.Errorf("customer for (%d, %d, %s) not found", d.cWID, d.cDID, d.cLast)
@@ -144,13 +144,13 @@ func (w *Workloader) runPayment(ctx context.Context, thread int) error {
 	if err := s.paymentStmts[paymentSelectCustomerForUpdate].QueryRowContext(ctx, d.cWID, d.cDID, d.cID).Scan(&d.cFirst, &d.cMiddle, &d.cLast,
 		&d.cStreet1, &d.cStreet2, &d.cCity, &d.cState, &d.cZip, &d.cPhone, &d.cCredit, &d.cCreditLim,
 		&d.cDiscount, &d.cBalance, &d.cSince); err != nil {
-		return fmt.Errorf("exec %s failed %v", paymentSelectCustomerForUpdate, err)
+		return fmt.Errorf("exec %s failed %w", paymentSelectCustomerForUpdate, err)
 	}
 
 	if d.cCredit == "BC" {
 		// Process 7
 		if err := s.paymentStmts[paymentSelectCustomerData].QueryRowContext(ctx, d.cWID, d.cDID, d.cID).Scan(&d.cData); err != nil {
-			return fmt.Errorf("exec %s failed %v", paymentSelectCustomerData, err)
+			return fmt.Errorf("exec %s failed %w", paymentSelectCustomerData, err)
 		}
 
 		newData := fmt.Sprintf("| %4d %2d %4d %2d %4d $%7.2f %12s %24s", d.cID, d.cDID, d.cWID,
@@ -163,19 +163,19 @@ func (w *Workloader) runPayment(ctx context.Context, thread int) error {
 
 		// Process 8
 		if _, err := s.paymentStmts[paymentUpdateCustomerWithData].ExecContext(ctx, d.hAmount, d.hAmount, newData, d.cWID, d.cDID, d.cID); err != nil {
-			return fmt.Errorf("exec %s failed %v", paymentUpdateCustomerWithData, err)
+			return fmt.Errorf("exec %s failed %w", paymentUpdateCustomerWithData, err)
 		}
 	} else {
 		// Process 9
 		if _, err := s.paymentStmts[paymentUpdateCustomer].ExecContext(ctx, d.hAmount, d.hAmount, d.cWID, d.cDID, d.cID); err != nil {
-			return fmt.Errorf("exec %s failed %v", paymentUpdateCustomer, err)
+			return fmt.Errorf("exec %s failed %w", paymentUpdateCustomer, err)
 		}
 	}
 
 	// Process 10
 	hData := fmt.Sprintf("%10s    %10s", d.wName, d.dName)
 	if _, err := s.paymentStmts[paymentInsertHistory].ExecContext(ctx, d.cDID, d.cWID, d.cID, d.dID, d.wID, time.Now().Format(timeFormat), d.hAmount, hData); err != nil {
-		return fmt.Errorf("exec %s failed %v", paymentInsertHistory, err)
+		return fmt.Errorf("exec %s failed %w", paymentInsertHistory, err)
 	}
 
 	return tx.Commit()
