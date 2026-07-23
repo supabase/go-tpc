@@ -56,7 +56,7 @@ func (w *Workloader) runDelivery(ctx context.Context, thread int) error {
 		if err = s.deliveryStmts[deliverySelectNewOrder].QueryRowContext(ctx, d.wID, i+1).Scan(&orders[i].oID); err == sql.ErrNoRows {
 			continue
 		} else if err != nil {
-			return fmt.Errorf("exec %s failed %v", deliverySelectNewOrder, err)
+			return fmt.Errorf("exec %s failed %w", deliverySelectNewOrder, err)
 		}
 	}
 
@@ -72,7 +72,7 @@ func (w *Workloader) runDelivery(ctx context.Context, thread int) error {
 		d.wID, 9, orders[8].oID,
 		d.wID, 10, orders[9].oID,
 	); err != nil {
-		return fmt.Errorf("exec %s failed %v", deliveryDeleteNewOrder, err)
+		return fmt.Errorf("exec %s failed %w", deliveryDeleteNewOrder, err)
 	}
 
 	if _, err = s.deliveryStmts[deliveryUpdateOrder].ExecContext(ctx, d.oCarrierID,
@@ -87,7 +87,7 @@ func (w *Workloader) runDelivery(ctx context.Context, thread int) error {
 		d.wID, 9, orders[8].oID,
 		d.wID, 10, orders[9].oID,
 	); err != nil {
-		return fmt.Errorf("exec %s failed %v", deliveryUpdateOrder, err)
+		return fmt.Errorf("exec %s failed %w", deliveryUpdateOrder, err)
 	}
 
 	orderRows, err := s.deliveryStmts[deliverySelectOrders].QueryContext(ctx,
@@ -103,18 +103,18 @@ func (w *Workloader) runDelivery(ctx context.Context, thread int) error {
 		d.wID, 10, orders[9].oID,
 	)
 	if err != nil {
-		return fmt.Errorf("exec %s failed %v", deliverySelectOrders, err)
+		return fmt.Errorf("exec %s failed %w", deliverySelectOrders, err)
 	}
 	defer orderRows.Close()
 	for orderRows.Next() {
 		var dID, cID int
 		if err = orderRows.Scan(&dID, &cID); err != nil {
-			return fmt.Errorf("exec %s failed %v", deliverySelectOrders, err)
+			return fmt.Errorf("exec %s failed %w", deliverySelectOrders, err)
 		}
 		orders[dID-1].cID = cID
 	}
 	if err := orderRows.Err(); err != nil {
-		return fmt.Errorf("exec %s failed %v", deliverySelectOrders, err)
+		return fmt.Errorf("exec %s failed %w", deliverySelectOrders, err)
 	}
 
 	if _, err = s.deliveryStmts[deliveryUpdateOrderLine].ExecContext(ctx, time.Now().Format(timeFormat),
@@ -129,7 +129,7 @@ func (w *Workloader) runDelivery(ctx context.Context, thread int) error {
 		d.wID, 9, orders[8].oID,
 		d.wID, 10, orders[9].oID,
 	); err != nil {
-		return fmt.Errorf("exec %s failed %v", deliveryUpdateOrderLine, err)
+		return fmt.Errorf("exec %s failed %w", deliveryUpdateOrderLine, err)
 	}
 
 	amountRows, err := s.deliveryStmts[deliverySelectSumAmount].QueryContext(ctx,
@@ -145,19 +145,19 @@ func (w *Workloader) runDelivery(ctx context.Context, thread int) error {
 		d.wID, 10, orders[9].oID,
 	)
 	if err != nil {
-		return fmt.Errorf("exec %s failed %v", deliverySelectSumAmount, err)
+		return fmt.Errorf("exec %s failed %w", deliverySelectSumAmount, err)
 	}
 	defer amountRows.Close()
 	for amountRows.Next() {
 		var dID int
 		var amount float64
 		if err = amountRows.Scan(&dID, &amount); err != nil {
-			return fmt.Errorf("exec %s failed %v", deliverySelectSumAmount, err)
+			return fmt.Errorf("exec %s failed %w", deliverySelectSumAmount, err)
 		}
 		orders[dID-1].amount = amount
 	}
 	if err := amountRows.Err(); err != nil {
-		return fmt.Errorf("exec %s failed %v", deliverySelectSumAmount, err)
+		return fmt.Errorf("exec %s failed %w", deliverySelectSumAmount, err)
 	}
 
 	for i := 0; i < districtPerWarehouse; i++ {
@@ -166,7 +166,7 @@ func (w *Workloader) runDelivery(ctx context.Context, thread int) error {
 			continue
 		}
 		if _, err = s.deliveryStmts[deliveryUpdateCustomer].ExecContext(ctx, order.amount, d.wID, i+1, order.cID); err != nil {
-			return fmt.Errorf("exec %s failed %v", deliveryUpdateCustomer, err)
+			return fmt.Errorf("exec %s failed %w", deliveryUpdateCustomer, err)
 		}
 	}
 	return tx.Commit()
