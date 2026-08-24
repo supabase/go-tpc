@@ -355,9 +355,9 @@ func (w *Workloader) Run(ctx context.Context, threadID int) (err error) {
 	// count as completed. We treat these as transient: the transaction
 	// already rolled back (see defer tx.Rollback() above), so we just move
 	// on to the next transaction instead of failing the whole run.
-	if isTransactionConflict(err) {
+	if sink.IsTransactionConflict(err) {
 		if w.cfg.Debug {
-			util.StdErrLogger.Printf("[tpcc] %s transaction rolled back due to a transient conflict (SQLSTATE %s), continuing: %v", txn.name, sqlState(err), err)
+			util.StdErrLogger.Printf("[tpcc] %s transaction rolled back due to a transient conflict (SQLSTATE %s), continuing: %v", txn.name, sink.SQLState(err), err)
 		}
 		err = nil
 	}
