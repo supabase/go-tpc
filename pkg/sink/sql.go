@@ -10,12 +10,19 @@ import (
 	"time"
 )
 
+// dbExecer is the subset of *sql.DB that SQLSink needs. Abstracted so tests
+// can simulate driver errors (e.g. a specific SQLSTATE) without a real
+// database connection.
+type dbExecer interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+}
+
 // SQLSink inserts values to a database in batch.
 type SQLSink struct {
 	maxBatchRows int
 
 	insertHint string
-	db         *sql.DB
+	db         dbExecer
 
 	buf          bytes.Buffer
 	bufferedRows int
@@ -109,7 +116,11 @@ func (s *SQLSink) WriteRow(ctx context.Context, values ...interface{}) error {
 	return nil
 }
 
-// Flush writes any buffered data to the db.
+// Flush writes any buffered data to the db. It retries transient errors up to
+// retryCount times with a fixed retryInterval sleep between attempts, but
+// gives up immediately on a persistent, non-retryable SQLSTATE. If every
+// attempt fails, Flush returns the last error instead of silently
+// discarding the batch and reporting success.
 func (s *SQLSink) Flush(ctx context.Context) error {
 	if s.buf.Len() == 0 {
 		return nil
@@ -125,6 +136,13 @@ func (s *SQLSink) Flush(ctx context.Context) error {
 			if i == 0 {
 				return fmt.Errorf("exec statement error: %v", err)
 			}
+			// A prior attempt's INSERT already committed and this retry is
+			// just re-hitting the same rows; not a new failure.
+			err = nil
+			break
+		}
+		if !isRetryableSQLState(err) {
+			fmt.Printf("exec statement error: %v (non-retryable, giving up)\n", err)
 			break
 		}
 		if i < s.retryCount {
@@ -136,6 +154,9 @@ func (s *SQLSink) Flush(ctx context.Context) error {
 	s.bufferedRows = 0
 	s.buf.Reset()
 
+	if err != nil {
+		return fmt.Errorf("exec statement error: %v", err)
+	}
 	return nil
 }
 
