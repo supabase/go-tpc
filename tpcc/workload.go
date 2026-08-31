@@ -263,13 +263,6 @@ func (w *Workloader) Run(ctx context.Context, threadID int) (err error) {
 		}
 		s.lastConnRefresh = time.Now()
 		refreshConn = true
-	} else if err := s.Conn.PingContext(ctx); err != nil {
-		// Fallback to ping-based refresh if automatic refresh didn't happen
-		if err := safeRefreshConn(); err != nil {
-			return fmt.Errorf("ping-based connection refresh failed (thread %d): %w", threadID, err)
-		}
-		s.lastConnRefresh = time.Now()
-		refreshConn = true
 	}
 	if s.newOrderStmts == nil || refreshConn {
 		s.newOrderStmts = map[string]*sql.Stmt{
@@ -359,6 +352,33 @@ func (w *Workloader) Run(ctx context.Context, threadID int) (err error) {
 		if w.cfg.Debug {
 			util.StdErrLogger.Printf("[tpcc] %s transaction rolled back due to a transient conflict (SQLSTATE %s), continuing: %v", txn.name, sink.SQLState(err), err)
 		}
+		err = nil
+	} else if ctx.Err() == nil && sink.IsConnectionError(err) {
+		// The connection died mid-transaction. We don't know whether the
+		// COMMIT actually reached the server, so retrying would risk
+		// double-applying the transaction (e.g. a duplicate payment or
+		// order) - instead, refresh the connection for next time and treat
+		// this transaction the same as an uncommitted conflict above: it
+		// didn't count as completed, move on.
+		origErr := err
+		if refreshErr := s.RefreshConn(ctx); refreshErr != nil {
+			return fmt.Errorf("connection refresh after connection error failed (thread %d): %w (original error: %v)", threadID, refreshErr, origErr)
+		}
+		closeStmts(s.newOrderStmts)
+		closeStmts(s.paymentStmts)
+		closeStmts(s.orderStatusStmts)
+		closeStmts(s.deliveryStmts)
+		closeStmts(s.stockLevelStmt)
+		s.newOrderStmts = nil
+		s.paymentStmts = nil
+		s.orderStatusStmts = nil
+		s.deliveryStmts = nil
+		s.stockLevelStmt = nil
+		s.lastConnRefresh = time.Now()
+		// Unlike the transient-conflict above a dead connection is rare
+		// and operationally significant, e.g. a replica failover or a
+		// backend killed by an admin, so this is always logged.
+		util.StdErrLogger.Printf("[tpcc] %s transaction failed due to a connection error, refreshed connection and continuing: %v", txn.name, origErr)
 		err = nil
 	}
 
