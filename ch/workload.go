@@ -10,6 +10,7 @@ import (
 
 	"github.com/supabase/go-tpc/pkg/measurement"
 	replayer "github.com/supabase/go-tpc/pkg/plan-replayer"
+	"github.com/supabase/go-tpc/pkg/sink"
 	"github.com/supabase/go-tpc/pkg/util"
 	"github.com/supabase/go-tpc/pkg/workload"
 	"github.com/supabase/go-tpc/tpch"
@@ -206,20 +207,6 @@ func (w *Workloader) Run(ctx context.Context, threadID int) error {
 	s := w.getState(ctx)
 	defer w.updateState(ctx)
 
-	if err := s.Conn.PingContext(ctx); err != nil {
-		select {
-		case <-time.After(w.cfg.RefreshConnWait):
-			// Sleep completed normally
-		case <-ctx.Done():
-			// Context was cancelled or timed out during sleep
-			return ctx.Err()
-		}
-
-		if err := s.RefreshConn(ctx); err != nil {
-			return err
-		}
-	}
-
 	queryName := w.cfg.QueryNames[s.queryIdx%len(w.cfg.QueryNames)]
 	query := queries[queryName]
 
@@ -233,6 +220,26 @@ func (w *Workloader) Run(ctx context.Context, threadID int) error {
 	}
 	start := time.Now()
 	rows, err := s.Conn.QueryContext(ctx, query)
+	if err != nil && ctx.Err() == nil && sink.IsConnectionError(err) {
+		// Read-only query, so it's safe to retry once against a fresh
+		// connection after the original one turned out to be dead. Keep the
+		// configured pause before reconnecting (previously applied before
+		// every query; now only paid when a connection actually died). Rare
+		// and operationally relevant (e.g. a replica failover), so always logged.
+		origErr := err
+		select {
+		case <-time.After(w.cfg.RefreshConnWait):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		refreshErr := s.RefreshConn(ctx)
+		if refreshErr == nil {
+			rows, err = s.Conn.QueryContext(ctx, query)
+			util.StdErrLogger.Printf("[ch] %s query failed due to a connection error, refreshed connection and retried: %v", queryName, origErr)
+		} else {
+			util.StdErrLogger.Printf("[ch] %s query failed due to a connection error, connection refresh also failed: %v (original error: %v)", queryName, refreshErr, origErr)
+		}
+	}
 	defer func() {
 		w.measurement.Measure(queryName, time.Since(start), err)
 	}()

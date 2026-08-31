@@ -1,8 +1,11 @@
 package sink
 
 import (
+	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
+	"net"
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
@@ -119,6 +122,65 @@ func TestIsRetryableSQLState(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Equal(t, tc.want, isRetryableSQLState(tc.err))
+		})
+	}
+}
+
+func TestIsConnectionError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "bad connection",
+			err:  driver.ErrBadConn,
+			want: true,
+		},
+		{
+			name: "wrapped bad connection",
+			err:  fmt.Errorf("exec %s failed %w", "SELECT ...", driver.ErrBadConn),
+			want: true,
+		},
+		{
+			name: "connection already done",
+			err:  sql.ErrConnDone,
+			want: true,
+		},
+		{
+			name: "mysql invalid connection",
+			err:  fmt.Errorf("exec %s failed %w", "SELECT ...", mysql.ErrInvalidConn),
+			want: true,
+		},
+		{
+			name: "raw network error",
+			err:  &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")},
+			want: true,
+		},
+		{
+			name: "postgres syntax error is not a connection error",
+			err:  fmt.Errorf("exec %s failed %w", "SELECT ...", &pq.Error{Code: "42601", Message: "syntax error"}),
+			want: false,
+		},
+		{
+			name: "mysql deadlock is not a connection error",
+			err:  fmt.Errorf("exec %s failed %w", "SELECT ...", &mysql.MySQLError{Number: 1213, SQLState: [5]byte{'4', '0', '0', '0', '1'}, Message: "Deadlock found"}),
+			want: false,
+		},
+		{
+			name: "plain error is not a connection error",
+			err:  errors.New("connection reset"),
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, IsConnectionError(tc.err))
 		})
 	}
 }
