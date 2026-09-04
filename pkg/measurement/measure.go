@@ -237,7 +237,7 @@ func (m *Measurement) closeRawSamples() error {
 }
 
 // Summary returns a structured, sorted snapshot of every non-empty
-// operation in OpSumMeasurement. Intended for a workload's 
+// operation in OpSumMeasurement. Intended for a workload's
 // OutputStats(true) to embed in its own --summary-file JSON document.
 func (m *Measurement) Summary() []OpSummary {
 	m.RLock()

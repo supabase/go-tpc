@@ -1,5 +1,5 @@
 # Build the go-tpc binary
-FROM golang:1.25 as builder
+FROM golang:1.27 as builder
 
 WORKDIR /workspace
 COPY go.mod go.mod
