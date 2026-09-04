@@ -3,9 +3,11 @@ package tpcc
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -96,6 +98,14 @@ type Config struct {
 	// output style
 	OutputStyle string
 
+	// if non-empty, makes run write one row per (tick,
+	// transaction, status) to this path. Empty disables it.
+	RawSamplesFile string
+	// if non-empty, makes run write a structured, end-of-run
+	// summary (the "[Summary]" table's figures, plus tpmC/tpm_total/
+	// efficiency_pct) as JSON to this path. Empty disables it.
+	SummaryFile string
+
 	// automatic connection refresh interval to balance traffic across new replicas
 	ConnRefreshInterval time.Duration
 
@@ -170,7 +180,7 @@ func NewWorkloader(db *sql.DB, cfg *Config) (workload.Workloader, error) {
 		cfg:                 cfg,
 		initLoadTime:        time.Now().Format(timeFormat),
 		ddlManager:          newDDLManager(cfg.Parts, cfg.UseFK, cfg.Warehouses, cfg.PartitionType, cfg.UseClusteredIndex),
-		rtMeasurement:       measurement.NewMeasurement(resetMaxLat),
+		rtMeasurement:       measurement.NewMeasurement(resetMaxLat, measurement.WithRawSamplesFile(cfg.RawSamplesFile)),
 		waitTimeMeasurement: measurement.NewMeasurement(resetMaxLat),
 	}
 
@@ -514,6 +524,31 @@ func outputWaitTimesMeasurement(outputStyle string, prefix string, opMeasurement
 	}
 }
 
+// tpccSummaryDoc is the --summary-file document: the generic per-transaction
+// figures measurement.Measurement.Summary already computes, plus the three
+// tpcc-specific figures ([Summary]'s tpmC/tpmTotal/efficiency line) that
+// need Warehouses and aren't generic enough to live in pkg/measurement.
+type tpccSummaryDoc struct {
+	Transactions  []measurement.OpSummary `json:"transactions"`
+	TpmC          *float64                `json:"tpmC,omitempty"`
+	TpmTotal      *float64                `json:"tpm_total,omitempty"`
+	EfficiencyPct *float64                `json:"efficiency_pct,omitempty"`
+}
+
+func writeSummaryFile(path string, doc tpccSummaryDoc) error {
+	if path == "" {
+		return nil
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal summary: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write summary file %s: %w", path, err)
+	}
+	return nil
+}
+
 func (w *Workloader) OutputStats(ifSummaryReport bool) {
 	w.rtMeasurement.Output(ifSummaryReport, w.cfg.OutputStyle, outputRtMeasurement)
 	if w.cfg.Wait {
@@ -532,12 +567,14 @@ func (w *Workloader) OutputStats(ifSummaryReport bool) {
 				totalOps += hist.GetInfo().Ops
 			}
 		}
+		doc := tpccSummaryDoc{Transactions: w.rtMeasurement.Summary()}
 		if newOrderHist != nil && !newOrderHist.Empty() {
 			result := newOrderHist.GetInfo()
 			const specWarehouseFactor = 12.86
 			tpmC := result.Ops * 60
 			tpmTotal := totalOps * 60
 			efc := 100 * tpmC / (specWarehouseFactor * float64(w.cfg.Warehouses))
+			doc.TpmC, doc.TpmTotal, doc.EfficiencyPct = &tpmC, &tpmTotal, &efc
 			lines := [][]string{
 				{
 					util.FloatToOneString(tpmC),
@@ -553,6 +590,9 @@ func (w *Workloader) OutputStats(ifSummaryReport bool) {
 			case util.OutputStyleJson:
 				util.RenderJson([]string{"tpmC", "tpmTotal", "efficiency"}, lines)
 			}
+		}
+		if err := writeSummaryFile(w.cfg.SummaryFile, doc); err != nil {
+			fmt.Fprintf(os.Stderr, "summary file: %v\n", err)
 		}
 	}
 }
