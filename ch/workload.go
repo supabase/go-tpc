@@ -323,6 +323,9 @@ func chSummary(h *measurement.Histogram) []string {
 }
 
 func (w *Workloader) OutputStats(ifSummaryReport bool) {
+	if ifSummaryReport {
+		w.measurement.Freeze(time.Now())
+	}
 	w.measurement.Output(ifSummaryReport, w.cfg.OutputStyle, outputRtMeasurement)
 	if ifSummaryReport {
 		var count int64

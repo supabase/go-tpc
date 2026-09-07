@@ -14,6 +14,10 @@ type Histogram struct {
 	m         sync.RWMutex
 	sum       int64
 	startTime time.Time
+	// frozenAt, once set, fixes the instant GetInfo uses in place of
+	// time.Now() to compute Elapsed/Ops so repeated calls while a summary
+	// is being rendered return identical figures.
+	frozenAt time.Time
 }
 
 type HistInfo struct {
@@ -50,6 +54,17 @@ func (h *Histogram) Measure(rawLatency time.Duration) {
 	}
 }
 
+// Freeze fixes `now` as the instant GetInfo uses for Elapsed/Ops from here on.
+func (h *Histogram) Freeze(now time.Time) {
+	h.m.Lock()
+	defer h.m.Unlock()
+	if !h.frozenAt.IsZero() {
+		panic(fmt.Sprintf("measurement: histogram already frozen at %s, attempted to freeze again at %s",
+			h.frozenAt.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)))
+	}
+	h.frozenAt = now
+}
+
 func (h *Histogram) Empty() bool {
 	h.m.Lock()
 	defer h.m.Unlock()
@@ -77,9 +92,13 @@ func (h *Histogram) Summary() []string {
 func (h *Histogram) GetInfo() HistInfo {
 	h.m.RLock()
 	defer h.m.RUnlock()
+	now := time.Now()
+	if !h.frozenAt.IsZero() {
+		now = h.frozenAt
+	}
 	sum := time.Duration(h.sum).Seconds() * 1000
 	avg := time.Duration(h.Mean()).Seconds() * 1000
-	elapsed := time.Now().Sub(h.startTime).Seconds()
+	elapsed := now.Sub(h.startTime).Seconds()
 	count := h.TotalCount()
 	ops := float64(count) / elapsed
 	info := HistInfo{

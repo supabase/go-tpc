@@ -123,6 +123,29 @@ func TestSummary_SplitsStatusAndSortsByName(t *testing.T) {
 	}
 }
 
+func TestFreeze_FixesSummaryElapsedAcrossRepeatedCalls(t *testing.T) {
+	m := NewMeasurement()
+	m.Measure("new_order", time.Millisecond, nil)
+	m.Measure("payment", time.Millisecond, nil)
+
+	time.Sleep(5 * time.Millisecond)
+	m.Freeze(time.Now())
+
+	before := m.Summary()
+	time.Sleep(5 * time.Millisecond)
+	after := m.Summary()
+
+	if len(before) != len(after) {
+		t.Fatalf("summary length changed: before=%d after=%d", len(before), len(after))
+	}
+	for i := range before {
+		if before[i].TakesSeconds != after[i].TakesSeconds {
+			t.Errorf("%s: TakesSeconds drifted after freeze: before=%v after=%v",
+				before[i].Transaction, before[i].TakesSeconds, after[i].TakesSeconds)
+		}
+	}
+}
+
 func readCSV(t *testing.T, path string) [][]string {
 	t.Helper()
 	f, err := os.Open(path)

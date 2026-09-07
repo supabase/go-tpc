@@ -550,6 +550,13 @@ func writeSummaryFile(path string, doc tpccSummaryDoc) error {
 }
 
 func (w *Workloader) OutputStats(ifSummaryReport bool) {
+	if ifSummaryReport {
+		now := time.Now()
+		w.rtMeasurement.Freeze(now)
+		if w.cfg.Wait {
+			w.waitTimeMeasurement.Freeze(now)
+		}
+	}
 	w.rtMeasurement.Output(ifSummaryReport, w.cfg.OutputStyle, outputRtMeasurement)
 	if w.cfg.Wait {
 		w.waitTimeMeasurement.Output(ifSummaryReport, w.cfg.OutputStyle, outputWaitTimesMeasurement)
