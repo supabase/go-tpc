@@ -45,6 +45,7 @@ var (
 	outputInterval time.Duration
 	isolationLevel int
 	silence        bool
+	txnTimeout     time.Duration
 	pprofAddr      string
 	metricsAddr    string
 	maxProcs       int
@@ -269,6 +270,7 @@ func main() {
 	rootCmd.PersistentFlags().BoolVar(&ignoreError, "ignore-error", false, "Ignore error when running workload")
 	rootCmd.PersistentFlags().BoolVar(&silence, "silence", false, "Don't print error when running workload")
 	rootCmd.PersistentFlags().DurationVar(&outputInterval, "interval", 10*time.Second, "Output interval time")
+	rootCmd.PersistentFlags().DurationVar(&txnTimeout, "txn-timeout", 2*time.Minute, "Max time a single transaction may run before it is cancelled and treated as a failed (not fatal) transaction; 0 disables this")
 	rootCmd.PersistentFlags().IntVar(&isolationLevel, "isolation", 0, `Isolation Level 0: Default, 1: ReadUncommitted,
 2: ReadCommitted, 3: WriteCommitted, 4: RepeatableRead,
 5: Snapshot, 6: Serializable, 7: Linerizable`)
