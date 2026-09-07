@@ -20,7 +20,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/supabase/go-tpc/pkg/util"
-	_ "go.uber.org/automaxprocs"
 
 	// mysql package
 	"github.com/go-sql-driver/mysql"
