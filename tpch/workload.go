@@ -290,6 +290,9 @@ func outputRtMeasurement(outputStyle string, prefix string, opMeasurement map[st
 }
 
 func (w *Workloader) OutputStats(ifSummaryReport bool) {
+	if ifSummaryReport {
+		w.measurement.Freeze(time.Now())
+	}
 	w.measurement.Output(ifSummaryReport, w.cfg.OutputStyle, outputRtMeasurement)
 }
 

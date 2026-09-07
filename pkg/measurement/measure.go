@@ -114,6 +114,18 @@ func (m *Measurement) takeCurMeasurement() (ret map[string]*Histogram) {
 	return
 }
 
+// Freeze fixes now as the stop instant for every histogram in
+// OpSumMeasurement, so a final summary report (stdout and --summary-file)
+// computes Elapsed/Ops from the exact moment the run stopped rather than a
+// fresh, drifting time.Now() per call.
+func (m *Measurement) Freeze(now time.Time) {
+	m.RLock()
+	defer m.RUnlock()
+	for _, h := range m.OpSumMeasurement {
+		h.Freeze(now)
+	}
+}
+
 func (m *Measurement) getOpName() []string {
 	m.RLock()
 	defer m.RUnlock()

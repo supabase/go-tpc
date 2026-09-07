@@ -171,6 +171,9 @@ func outputMeasurement(outputStyle string, prefix string, opMeasurement map[stri
 }
 
 func (w *Workloader) OutputStats(ifSummaryReport bool) {
+	if ifSummaryReport {
+		w.measurement.Freeze(time.Now())
+	}
 	w.measurement.Output(ifSummaryReport, w.cfg.OutputStyle, outputMeasurement)
 }
 
