@@ -72,6 +72,15 @@ func execute(timeoutCtx context.Context, w workload.Workloader, action string, t
 	}
 
 	// This loop is only reached for "run" action since other actions return earlier
+
+	// Transactions already in flight when the deadline hits should be allowed
+	// to finish (commit or roll back normally) rather than have the driver
+	// tear down the connection mid-statement. So the transaction itself runs
+	// on a context detached from the deadline/cancellation; only the
+	// loop-boundary check below (and the outer ctx.Err() check after Run
+	// returns) uses the real, cancelable ctx to decide whether to stop.
+	runCtx := context.WithoutCancel(ctx)
+
 	for i := 0; i < count || count <= 0; i++ {
 		// Check if timeout has occurred before starting next query
 		select {
@@ -84,7 +93,7 @@ func execute(timeoutCtx context.Context, w workload.Workloader, action string, t
 		default:
 		}
 
-		err := w.Run(ctx, index)
+		err := w.Run(runCtx, index)
 		if err != nil {
 			// Check if the error is due to timeout/cancellation
 			if ctx.Err() != nil {
