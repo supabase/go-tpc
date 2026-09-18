@@ -3,22 +3,29 @@ package tpcc
 import (
 	"context"
 	"fmt"
+	"strings"
 )
+
+// checkFunc verifies one clause 3.3.2 consistency condition for one warehouse.
+type checkFunc func(ctx context.Context, warehouse int) error
 
 // CheckPrepare implements Workloader interface
 func (w *Workloader) CheckPrepare(ctx context.Context, threadID int) error {
-	return w.check(ctx, threadID, true)
+	return w.check(ctx, threadID, true, true)
 }
 
 // Check implements Workloader interface
 func (w *Workloader) Check(ctx context.Context, threadID int) error {
-	return w.check(ctx, threadID, w.cfg.CheckAll)
+	return w.check(ctx, threadID, w.cfg.CheckAll, false)
 }
 
-// Check implements Workloader interface
-func (w *Workloader) check(ctx context.Context, threadID int, checkAll bool) error {
+// check runs the consistency conditions of clause 3.3.2 against the warehouses
+// owned by this thread. checkAll adds the conditions outside the default set.
+// freshlyLoaded selects the strict form of the conditions that hold only before
+// the workload has run.
+func (w *Workloader) check(ctx context.Context, threadID int, checkAll, freshlyLoaded bool) error {
 	// refer 3.3.2
-	checks := map[string]func(ctx context.Context, warehouse int) error{
+	checks := map[string]checkFunc{
 		"3.3.2.1":  w.checkCondition1,
 		"3.3.2.2":  w.checkCondition2,
 		"3.3.2.3":  w.checkCondition3,
@@ -33,20 +40,7 @@ func (w *Workloader) check(ctx context.Context, threadID int, checkAll bool) err
 	}
 
 	if checkAll {
-		checks = map[string]func(ctx context.Context, warehouse int) error{
-			"3.3.2.1":  w.checkCondition1,
-			"3.3.2.2":  w.checkCondition2,
-			"3.3.2.3":  w.checkCondition3,
-			"3.3.2.4":  w.checkCondition4,
-			"3.3.2.5":  w.checkCondition5,
-			"3.3.2.6":  w.checkCondition6,
-			"3.3.2.7":  w.checkCondition7,
-			"3.3.2.8":  w.checkCondition8,
-			"3.3.2.9":  w.checkCondition9,
-			"3.3.2.10": w.checkCondition10,
-			"3.3.2.11": w.checkCondition11,
-			"3.3.2.12": w.checkCondition12,
-		}
+		checks["3.3.2.11"] = w.checkCondition11(freshlyLoaded)
 	}
 
 	for i := threadID % w.cfg.Threads; i < w.cfg.Warehouses; i += w.cfg.Threads {
@@ -227,12 +221,12 @@ func (w *Workloader) checkCondition6(ctx context.Context, warehouse int) error {
 	query := `
 SELECT COUNT(*) FROM
 (SELECT o_ol_cnt, order_line_count FROM orders
-	LEFT JOIN (SELECT ol_w_id, ol_d_id, ol_o_id, count(*) order_line_count FROM order_line GROUP BY ol_w_id, ol_d_id, ol_o_id ORDER by ol_w_id, ol_d_id, ol_o_id) AS order_line
+	LEFT JOIN (SELECT ol_w_id, ol_d_id, ol_o_id, count(*) order_line_count FROM order_line WHERE ol_w_id = ? GROUP BY ol_w_id, ol_d_id, ol_o_id) AS order_line
 	ON orders.o_w_id = order_line.ol_w_id AND orders.o_d_id = order_line.ol_d_id AND orders.o_id = order_line.ol_o_id
 	WHERE orders.o_w_id = ?) AS T
 WHERE T.o_ol_cnt != T.order_line_count`
 
-	rows, err := s.Conn.QueryContext(ctx, convertToPQ(query, w.cfg.Driver), warehouse)
+	rows, err := s.Conn.QueryContext(ctx, convertToPQ(query, w.cfg.Driver), warehouse, warehouse)
 	if err != nil {
 		return fmt.Errorf("exec %s failed %v", query, err)
 	}
@@ -391,45 +385,66 @@ func (w *Workloader) checkCondition10(ctx context.Context, warehouse int) error 
 	return nil
 }
 
-func (w *Workloader) checkCondition11(ctx context.Context, warehouse int) error {
-	s := getTPCCState(ctx)
-
-	// Entries in the CUSTOMER, ORDER and NEW-ORDER tables must satisfy the relationship:
-	// (count(*) from ORDER) - (count(*) from NEW-ORDER) = 2100
-	// for each district defined by (O_W_ID, O_D_ID) = (NO_W_ID, NO_D_ID) = (C_W_ID, C_D_ID).
-	var count float64
-	query := `
-SELECT count(*) FROM
-	(SELECT * FROM
-		(SELECT o_w_id, o_d_id, count(*) order_count FROM orders GROUP BY o_w_id, o_d_id) orders
-        JOIN (SELECT no_w_id, no_d_id, count(*) new_order_count FROM new_order GROUP BY no_w_id, no_d_id) new_order
-        ON orders.o_w_id = new_order.no_w_id AND orders.o_d_id = new_order.no_d_id
-	) order_new_order
-JOIN (SELECT c_w_id, c_d_id, count(*) customer_count FROM customer GROUP BY c_w_id, c_d_id) customer
-ON order_new_order.no_w_id = customer.c_w_id AND order_new_order.no_d_id = customer.c_d_id
-WHERE c_w_id = ? AND order_count - 2100 != new_order_count`
-
-	rows, err := s.Conn.QueryContext(ctx, convertToPQ(query, w.cfg.Driver), warehouse)
-	if err != nil {
-		return fmt.Errorf("exec %s failed %v", query, err)
+// checkCondition11 returns a check for the relationship between the CUSTOMER,
+// ORDER and NEW-ORDER tables:
+//
+//	(count(*) from ORDER) - (count(*) from NEW-ORDER) = 2100
+//
+// for each district defined by (O_W_ID, O_D_ID) = (NO_W_ID, NO_D_ID) = (C_W_ID, C_D_ID).
+//
+// The constant describes the freshly loaded database, where the load writes
+// 3000 orders per district and leaves the last 900 of them undelivered. The
+// delivery transaction deletes the NEW-ORDER row and only updates the matching
+// ORDER row (refer 2.7.4.2), so once the workload has run the difference is
+// 2100 plus the number of orders delivered since the load. Only the lower bound
+// survives a run, and a smaller difference then means NEW-ORDER rows were left
+// behind or ORDER rows were lost.
+func (w *Workloader) checkCondition11(freshlyLoaded bool) checkFunc {
+	predicate, want := "<", "at least 2100"
+	if freshlyLoaded {
+		predicate, want = "<>", "2100"
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		if err := rows.Scan(&count); err != nil {
+	query := fmt.Sprintf(`
+SELECT o_d_id, order_count, new_order_count FROM
+	(SELECT o_d_id, count(*) order_count FROM orders WHERE o_w_id = ? GROUP BY o_d_id) orders
+	JOIN (SELECT no_d_id, count(*) new_order_count FROM new_order WHERE no_w_id = ? GROUP BY no_d_id) new_order
+		ON orders.o_d_id = new_order.no_d_id
+	JOIN (SELECT c_d_id FROM customer WHERE c_w_id = ? GROUP BY c_d_id) customer
+		ON orders.o_d_id = customer.c_d_id
+WHERE order_count - new_order_count %s 2100`, predicate)
+
+	return func(ctx context.Context, warehouse int) error {
+		s := getTPCCState(ctx)
+
+		rows, err := s.Conn.QueryContext(ctx, convertToPQ(query, w.cfg.Driver), warehouse, warehouse, warehouse)
+		if err != nil {
+			return fmt.Errorf("exec %s failed %v", query, err)
+		}
+		defer rows.Close()
+
+		var violations []string
+		for rows.Next() {
+			var district, orderCount, newOrderCount int64
+			if err := rows.Scan(&district, &orderCount, &newOrderCount); err != nil {
+				return err
+			}
+
+			violations = append(violations, fmt.Sprintf("district %d has %d orders and %d new orders (difference %d)",
+				district, orderCount, newOrderCount, orderCount-newOrderCount))
+		}
+
+		if err := rows.Err(); err != nil {
 			return err
 		}
 
-		if count != 0 {
-			return fmt.Errorf("all of (count(*) from ORDER) - (count(*) from NEW-ORDER) for each district defined by (O_W_ID, O_D_ID) = (NO_W_ID, NO_D_ID) = (C_W_ID, C_D_ID) should be 2100 in warehouse %d", warehouse)
+		if len(violations) > 0 {
+			return fmt.Errorf("(count(*) from ORDER) - (count(*) from NEW-ORDER) should be %s for each district in warehouse %d, but %s",
+				want, warehouse, strings.Join(violations, "; "))
 		}
-	}
 
-	if err := rows.Err(); err != nil {
-		return err
+		return nil
 	}
-
-	return nil
 }
 
 func (w *Workloader) checkCondition12(ctx context.Context, warehouse int) error {
