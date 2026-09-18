@@ -189,8 +189,6 @@ func (w *Workloader) runNewOrder(ctx context.Context, thread int) error {
 	}
 	defer tx.Rollback()
 
-	// TODO: support prepare statement
-
 	// Process 1
 	if err := s.newOrderStmts[newOrderSelectCustomer].QueryRowContext(ctx, d.wID, d.dID, d.cID).Scan(&d.cDiscount, &d.cLast, &d.cCredit, &d.wTax); err != nil {
 		return fmt.Errorf("exec %s(wID=%d,dID=%d,cID=%d) failed %w", newOrderSelectCustomer, d.wID, d.dID, d.cID, err)
