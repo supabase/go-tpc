@@ -49,6 +49,12 @@ type tpccState struct {
 	// Stored-procedure CALL statements, populated when cfg.StoredProcs is on.
 	procStmts map[string]*sql.Stmt
 
+	// stmtsReady is set once the statements for the active mode have been
+	// prepared on the current connection. It is used instead of a nil-map
+	// check because --stored-procs deliberately leaves the per-transaction
+	// maps empty.
+	stmtsReady bool
+
 	// for automatic connection refresh
 	lastConnRefresh time.Time
 }
@@ -229,13 +235,7 @@ func (w *Workloader) InitThread(ctx context.Context, threadID int) context.Conte
 // CleanupThread implements Workloader interface
 func (w *Workloader) CleanupThread(ctx context.Context, threadID int) {
 	s := getTPCCState(ctx)
-	closeStmts(s.newOrderStmts)
-	closeStmts(s.paymentStmts)
-	closeStmts(s.deliveryStmts)
-	closeStmts(s.stockLevelStmt)
-	closeStmts(s.orderStatusStmts)
-	closeStmts(s.procStmts)
-	// TODO: close stmts for delivery, order status, and stock level
+	s.closeAllStmts()
 	if s.Conn != nil {
 		s.Conn.Close()
 	}
@@ -273,7 +273,6 @@ func (w *Workloader) Run(ctx context.Context, threadID int) (err error) {
 	}()
 
 	s := getTPCCState(ctx)
-	refreshConn := false
 
 	// Helper function to safely refresh connection with panic recovery
 	safeRefreshConn := func() error {
@@ -287,11 +286,14 @@ func (w *Workloader) Run(ctx context.Context, threadID int) (err error) {
 
 	// Check if automatic connection refresh is needed
 	if w.cfg.ConnRefreshInterval > 0 && time.Since(s.lastConnRefresh) >= w.cfg.ConnRefreshInterval {
+		// Close before refreshing: the statements belong to the connection
+		// being replaced, and closeAllStmts clears stmtsReady so the block
+		// below re-prepares them on the new one.
+		s.closeAllStmts()
 		if err := safeRefreshConn(); err != nil {
 			return fmt.Errorf("automatic connection refresh failed (thread %d): %w", threadID, err)
 		}
 		s.lastConnRefresh = time.Now()
-		refreshConn = true
 	}
 	// Install PL/pgSQL stored procedures lazily on the first Run() call.
 	// CREATE OR REPLACE is idempotent, so this is safe even if other threads
@@ -305,68 +307,13 @@ func (w *Workloader) Run(ctx context.Context, threadID int) (err error) {
 		}
 	}
 
-	if s.newOrderStmts == nil || refreshConn {
-		s.newOrderStmts = map[string]*sql.Stmt{
-			newOrderSelectCustomer: prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderSelectCustomer),
-			newOrderSelectDistrict: prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderSelectDistrict),
-			newOrderUpdateDistrict: prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderUpdateDistrict),
-			newOrderInsertOrder:    prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderInsertOrder),
-			newOrderInsertNewOrder: prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderInsertNewOrder),
-			// batch select items
-			// batch select stock for update
-			newOrderUpdateStock: prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderUpdateStock),
-			// batch insert order_line
-		}
-		for i := 5; i <= 15; i++ {
-			s.newOrderStmts[newOrderSelectItemSQLs[i]] = prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderSelectItemSQLs[i])
-			s.newOrderStmts[newOrderSelectStockSQLs[i]] = prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderSelectStockSQLs[i])
-			s.newOrderStmts[newOrderInsertOrderLineSQLs[i]] = prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderInsertOrderLineSQLs[i])
-		}
-
-		s.paymentStmts = map[string]*sql.Stmt{
-			paymentUpdateWarehouse:          prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentUpdateWarehouse),
-			paymentSelectWarehouse:          prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentSelectWarehouse),
-			paymentUpdateDistrict:           prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentUpdateDistrict),
-			paymentSelectDistrict:           prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentSelectDistrict),
-			paymentSelectCustomerListByLast: prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentSelectCustomerListByLast),
-			paymentSelectCustomerForUpdate:  prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentSelectCustomerForUpdate),
-			paymentSelectCustomerData:       prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentSelectCustomerData),
-			paymentUpdateCustomerWithData:   prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentUpdateCustomerWithData),
-			paymentUpdateCustomer:           prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentUpdateCustomer),
-			paymentInsertHistory:            prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentInsertHistory),
-		}
-
-		s.orderStatusStmts = map[string]*sql.Stmt{
-			orderStatusSelectCustomerCntByLast: prepareStmt(w.cfg.Driver, ctx, s.Conn, orderStatusSelectCustomerCntByLast),
-			orderStatusSelectCustomerByLast:    prepareStmt(w.cfg.Driver, ctx, s.Conn, orderStatusSelectCustomerByLast),
-			orderStatusSelectCustomerByID:      prepareStmt(w.cfg.Driver, ctx, s.Conn, orderStatusSelectCustomerByID),
-			orderStatusSelectLatestOrder:       prepareStmt(w.cfg.Driver, ctx, s.Conn, orderStatusSelectLatestOrder),
-			orderStatusSelectOrderLine:         prepareStmt(w.cfg.Driver, ctx, s.Conn, orderStatusSelectOrderLine),
-		}
-		s.deliveryStmts = map[string]*sql.Stmt{
-			deliverySelectNewOrder:  prepareStmt(w.cfg.Driver, ctx, s.Conn, deliverySelectNewOrder),
-			deliveryDeleteNewOrder:  prepareStmt(w.cfg.Driver, ctx, s.Conn, deliveryDeleteNewOrder),
-			deliveryUpdateOrder:     prepareStmt(w.cfg.Driver, ctx, s.Conn, deliveryUpdateOrder),
-			deliverySelectOrders:    prepareStmt(w.cfg.Driver, ctx, s.Conn, deliverySelectOrders),
-			deliveryUpdateOrderLine: prepareStmt(w.cfg.Driver, ctx, s.Conn, deliveryUpdateOrderLine),
-			deliverySelectSumAmount: prepareStmt(w.cfg.Driver, ctx, s.Conn, deliverySelectSumAmount),
-			deliveryUpdateCustomer:  prepareStmt(w.cfg.Driver, ctx, s.Conn, deliveryUpdateCustomer),
-		}
-		s.stockLevelStmt = map[string]*sql.Stmt{
-			stockLevelSelectDistrict: prepareStmt(w.cfg.Driver, ctx, s.Conn, stockLevelSelectDistrict),
-			stockLevelCount:          prepareStmt(w.cfg.Driver, ctx, s.Conn, stockLevelCount),
-		}
-
+	if !s.stmtsReady {
 		if w.cfg.StoredProcs {
-			// CALL strings already use $N placeholders, so we don't translate.
-			s.procStmts = map[string]*sql.Stmt{
-				tpccCallNewOrder:    prepareStmt(w.cfg.Driver, ctx, s.Conn, tpccCallNewOrder),
-				tpccCallPayment:     prepareStmt(w.cfg.Driver, ctx, s.Conn, tpccCallPayment),
-				tpccCallOrderStatus: prepareStmt(w.cfg.Driver, ctx, s.Conn, tpccCallOrderStatus),
-				tpccCallDelivery:    prepareStmt(w.cfg.Driver, ctx, s.Conn, tpccCallDelivery),
-				tpccCallStockLevel:  prepareStmt(w.cfg.Driver, ctx, s.Conn, tpccCallStockLevel),
-			}
+			w.prepareProcStmts(ctx, s)
+		} else {
+			w.prepareTxnStmts(ctx, s)
 		}
+		s.stmtsReady = true
 	}
 
 	// refer 5.2.4.2
@@ -413,19 +360,10 @@ func (w *Workloader) Run(ctx context.Context, threadID int) (err error) {
 		// this transaction the same as an uncommitted conflict above: it
 		// didn't count as completed, move on.
 		origErr := err
+		s.closeAllStmts()
 		if refreshErr := s.RefreshConn(ctx); refreshErr != nil {
 			return fmt.Errorf("connection refresh after connection error failed (thread %d): %w (original error: %v)", threadID, refreshErr, origErr)
 		}
-		closeStmts(s.newOrderStmts)
-		closeStmts(s.paymentStmts)
-		closeStmts(s.orderStatusStmts)
-		closeStmts(s.deliveryStmts)
-		closeStmts(s.stockLevelStmt)
-		s.newOrderStmts = nil
-		s.paymentStmts = nil
-		s.orderStatusStmts = nil
-		s.deliveryStmts = nil
-		s.stockLevelStmt = nil
 		s.lastConnRefresh = time.Now()
 		// Unlike the transient-conflict above a dead connection is rare
 		// and operationally significant, e.g. a replica failover or a
@@ -617,16 +555,95 @@ func (w *Workloader) beginTx(ctx context.Context) (*sql.Tx, error) {
 	return tx, err
 }
 
-func prepareStmts(driver string, ctx context.Context, conn *sql.Conn, queries []string) []*sql.Stmt {
-	stmts := make([]*sql.Stmt, len(queries))
-	for i, query := range queries {
-		if len(query) == 0 {
-			continue
-		}
-		stmts[i] = prepareStmt(driver, ctx, conn, query)
+// prepareTxnStmts prepares the per-transaction statements on the worker's
+// pinned connection. Only needed when the transactions run as client-side
+// SQL; see prepareProcStmts for the --stored-procs path.
+func (w *Workloader) prepareTxnStmts(ctx context.Context, s *tpccState) {
+	s.newOrderStmts = map[string]*sql.Stmt{
+		newOrderSelectCustomer: prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderSelectCustomer),
+		newOrderSelectDistrict: prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderSelectDistrict),
+		newOrderUpdateDistrict: prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderUpdateDistrict),
+		newOrderInsertOrder:    prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderInsertOrder),
+		newOrderInsertNewOrder: prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderInsertNewOrder),
+		// batch select items
+		// batch select stock for update
+		newOrderUpdateStock: prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderUpdateStock),
+		// batch insert order_line
+	}
+	for i := 5; i <= 15; i++ {
+		s.newOrderStmts[newOrderSelectItemSQLs[i]] = prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderSelectItemSQLs[i])
+		s.newOrderStmts[newOrderSelectStockSQLs[i]] = prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderSelectStockSQLs[i])
+		s.newOrderStmts[newOrderInsertOrderLineSQLs[i]] = prepareStmt(w.cfg.Driver, ctx, s.Conn, newOrderInsertOrderLineSQLs[i])
 	}
 
-	return stmts
+	s.paymentStmts = map[string]*sql.Stmt{
+		paymentUpdateWarehouse:          prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentUpdateWarehouse),
+		paymentSelectWarehouse:          prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentSelectWarehouse),
+		paymentUpdateDistrict:           prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentUpdateDistrict),
+		paymentSelectDistrict:           prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentSelectDistrict),
+		paymentSelectCustomerListByLast: prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentSelectCustomerListByLast),
+		paymentSelectCustomerForUpdate:  prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentSelectCustomerForUpdate),
+		paymentSelectCustomerData:       prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentSelectCustomerData),
+		paymentUpdateCustomerWithData:   prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentUpdateCustomerWithData),
+		paymentUpdateCustomer:           prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentUpdateCustomer),
+		paymentInsertHistory:            prepareStmt(w.cfg.Driver, ctx, s.Conn, paymentInsertHistory),
+	}
+
+	s.orderStatusStmts = map[string]*sql.Stmt{
+		orderStatusSelectCustomerCntByLast: prepareStmt(w.cfg.Driver, ctx, s.Conn, orderStatusSelectCustomerCntByLast),
+		orderStatusSelectCustomerByLast:    prepareStmt(w.cfg.Driver, ctx, s.Conn, orderStatusSelectCustomerByLast),
+		orderStatusSelectCustomerByID:      prepareStmt(w.cfg.Driver, ctx, s.Conn, orderStatusSelectCustomerByID),
+		orderStatusSelectLatestOrder:       prepareStmt(w.cfg.Driver, ctx, s.Conn, orderStatusSelectLatestOrder),
+		orderStatusSelectOrderLine:         prepareStmt(w.cfg.Driver, ctx, s.Conn, orderStatusSelectOrderLine),
+	}
+	s.deliveryStmts = map[string]*sql.Stmt{
+		deliverySelectNewOrder:  prepareStmt(w.cfg.Driver, ctx, s.Conn, deliverySelectNewOrder),
+		deliveryDeleteNewOrder:  prepareStmt(w.cfg.Driver, ctx, s.Conn, deliveryDeleteNewOrder),
+		deliveryUpdateOrder:     prepareStmt(w.cfg.Driver, ctx, s.Conn, deliveryUpdateOrder),
+		deliverySelectOrders:    prepareStmt(w.cfg.Driver, ctx, s.Conn, deliverySelectOrders),
+		deliveryUpdateOrderLine: prepareStmt(w.cfg.Driver, ctx, s.Conn, deliveryUpdateOrderLine),
+		deliverySelectSumAmount: prepareStmt(w.cfg.Driver, ctx, s.Conn, deliverySelectSumAmount),
+		deliveryUpdateCustomer:  prepareStmt(w.cfg.Driver, ctx, s.Conn, deliveryUpdateCustomer),
+	}
+	s.stockLevelStmt = map[string]*sql.Stmt{
+		stockLevelSelectDistrict: prepareStmt(w.cfg.Driver, ctx, s.Conn, stockLevelSelectDistrict),
+		stockLevelCount:          prepareStmt(w.cfg.Driver, ctx, s.Conn, stockLevelCount),
+	}
+}
+
+// prepareProcStmts prepares the five stored-procedure CALL statements used by
+// --stored-procs mode. That mode routes every transaction through these, so
+// the per-transaction set prepareTxnStmts builds is never executed and is
+// deliberately not prepared.
+func (w *Workloader) prepareProcStmts(ctx context.Context, s *tpccState) {
+	// CALL strings already use $N placeholders, so we don't translate.
+	s.procStmts = map[string]*sql.Stmt{
+		tpccCallNewOrder:    prepareStmt(w.cfg.Driver, ctx, s.Conn, tpccCallNewOrder),
+		tpccCallPayment:     prepareStmt(w.cfg.Driver, ctx, s.Conn, tpccCallPayment),
+		tpccCallOrderStatus: prepareStmt(w.cfg.Driver, ctx, s.Conn, tpccCallOrderStatus),
+		tpccCallDelivery:    prepareStmt(w.cfg.Driver, ctx, s.Conn, tpccCallDelivery),
+		tpccCallStockLevel:  prepareStmt(w.cfg.Driver, ctx, s.Conn, tpccCallStockLevel),
+	}
+}
+
+// closeAllStmts closes every prepared statement bound to the current
+// connection and clears the maps so the next Run re-prepares them.
+// Statements are bound to a specific *sql.Conn, so they become unusable as
+// soon as that connection is replaced.
+func (s *tpccState) closeAllStmts() {
+	closeStmts(s.newOrderStmts)
+	closeStmts(s.paymentStmts)
+	closeStmts(s.orderStatusStmts)
+	closeStmts(s.deliveryStmts)
+	closeStmts(s.stockLevelStmt)
+	closeStmts(s.procStmts)
+	s.newOrderStmts = nil
+	s.paymentStmts = nil
+	s.orderStatusStmts = nil
+	s.deliveryStmts = nil
+	s.stockLevelStmt = nil
+	s.procStmts = nil
+	s.stmtsReady = false
 }
 
 func prepareStmt(driver string, ctx context.Context, conn *sql.Conn, query string) *sql.Stmt {
