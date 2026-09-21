@@ -1,22 +1,47 @@
 # Go TPC
 
-A toolbox to benchmark workloads in [TPC](http://www.tpc.org/) for TiDB and almost MySQL compatible databases, and PostgreSQL compatible database, such as PostgreSQL / CockroachDB / AlloyDB / Yugabyte.
+A command line tool to run [TPC](http://www.tpc.org/)-like workloads.
+
+This is a fork of https://github.com/pingcap/go-tpc containing several improvements over the original code base:
+
+* Better compatibility with the TPC-C spec
+* Additional features such as structured CSV and JSON output
+* Stricter error handling
+* Up-to-date dependencies
+
+and many more.
+
+We support the following workloads:
+
+* TPC-C
+* TPC-H
+* [CH-benCHmark](https://db.in.tum.de/research/projects/CHbenCHmark/)
+
+and the following databases:
+
+* Postgres and compatible databases such as CockroachDB, AlloyDB or Yugabyte
+* MySQL and compatible databases such as TiDB
+
+Our primary target with the most complete coverage for practical workloads is the TPC-C workload for Postgres but we strive to keep feature paritz across all supported workloads and database systems.
 
 ## Install
 
-You can use one of the three approaches
+Use one of the following approaches:
 
-### Install using script(recommend)
+### Install script (recommended)
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/supabase/go-tpc/master/install.sh | sh
 ```
 
-And then open a new terminal to try `go-tpc`
-
 ### Download binary
 
-You can download the pre-built binary [here](https://github.com/supabase/go-tpc/releases) and then gunzip it
+```bash
+ curl -LO "https://github.com/supabase/go-tpc/releases/download/latest/go-tpc_latest_$(uname -s | tr 'A-Z' 'a-z')_$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/').tar.gz"
+ tar -xzf go-tpc_latest_*.tar.gz
+```
+
+We recommend you put `go-tpc` on `$PATH`.
 
 ### Build from source
 
@@ -26,11 +51,9 @@ cd go-tpc
 make build
 ```
 
-Then you can find the `go-tpc` binary file in the `./bin` directory.
+The `go-tpc` binary is built in `./bin`.
 
 ## Usage
-
-If you have `go-tpc` in your PATH, the command below you should replace `./bin/go-tpc` with `go-tpc`
 
 By default, go-tpc uses `root::@tcp(127.0.0.1:4000)/test` as the default dsn address, you can override it by setting below flags:
 
@@ -58,151 +81,155 @@ For example:
 
 #### Prepare
 
-##### TiDB & MySQL
+##### Postgres
 
 ```bash
-# Create 4 warehouses with 4 threads
-./bin/go-tpc tpcc --warehouses 4 prepare -T 4
-```
-
-##### PostgreSQL & CockroachDB & AlloyDB & Yugabyte
-
-
-```
-./bin/go-tpc tpcc prepare -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
+go-tpc tpcc prepare -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
 
 # Refresh optimizer statistics after loading (VACUUM ANALYZE on postgres, ANALYZE TABLE on mysql). 
 # Only enable if the server does this maintenance automatically during the run, i.e. autovacuum 
 # on Postgres or innodb_stats_auto_recalc on MySQL.
-./bin/go-tpc tpcc prepare --analyze -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
+go-tpc tpcc prepare --analyze -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
+```
+
+##### MySQL
+
+```bash
+# Create 4 warehouses with 4 threads
+go-tpc tpcc --warehouses 4 prepare -T 4
 ```
 
 #### Run
 
-##### TiDB & MySQL
+##### Postgres
+
+```bash
+go-tpc tpcc run -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
+```
+
+##### MySQL
 
 ```bash
 # Run TPCC workloads, you can just run or add --wait option to including wait times
-./bin/go-tpc tpcc --warehouses 4 run -T 4
+go-tpc tpcc --warehouses 4 run -T 4
 # Run TPCC including wait times(keying & thinking time) on every transactions
-./bin/go-tpc tpcc --warehouses 4 run -T 4 --wait
-```
-
-##### PostgreSQL & CockroachDB & AlloyDB & Yugabyte
-
-```
-./bin/go-tpc tpcc run -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
+go-tpc tpcc --warehouses 4 run -T 4 --wait
 ```
 
 #### Check
 
 ```bash
 # Check consistency. you can check after prepare or after run
-./bin/go-tpc tpcc --warehouses 4 check
+go-tpc tpcc --warehouses 4 check
 ```
 
 #### Clean up
 
 ```bash
 # Cleanup
-./bin/go-tpc tpcc --warehouses 4 cleanup
+go-tpc tpcc --warehouses 4 cleanup
 ```
 
 #### Other usages
 
 ```bash
 # Generate csv files (split to 100 files each table)
-./bin/go-tpc tpcc --warehouses 4 prepare -T 100 --output-type csv --output-dir data
+go-tpc tpcc --warehouses 4 prepare -T 100 --output-type csv --output-dir data
 # Specified tables when generating csv files
-./bin/go-tpc tpcc --warehouses 4 prepare -T 100 --output-type csv --output-dir data --tables history,orders
+go-tpc tpcc --warehouses 4 prepare -T 100 --output-type csv --output-dir data --tables history,orders
 # Start pprof
-./bin/go-tpc tpcc --warehouses 4 prepare --output-type csv --output-dir data --pprof :10111
+go-tpc tpcc --warehouses 4 prepare --output-type csv --output-dir data --pprof :10111
 ```
-
-If you want to import tpcc data into TiDB, please refer to [import-to-tidb](docs/import-to-tidb.md).
 
 ### TPC-H
 
 #### Prepare
 
-##### TiDB & MySQL
+##### Postgres
+
+```bash
+go-tpc tpch prepare -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
+```
+
+##### MySQL
 
 ```bash
 # Prepare data with scale factor 1
-./bin/go-tpc tpch --sf=1 prepare
+go-tpc tpch --sf=1 prepare
 # Prepare data with scale factor 1, create tiflash replica, and analyze table after data loaded
-./bin/go-tpc tpch --sf 1 --analyze --tiflash-replica 1 prepare
-```
-
-##### PostgreSQL & CockroachDB & AlloyDB & Yugabyte
-
-```
-./bin/go-tpc tpch prepare -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
+go-tpc tpch --sf 1 --analyze --tiflash-replica 1 prepare
 ```
 
 #### Run
-##### TiDB & MySQL
+
+##### Postgres
+
+```bash
+go-tpc tpch run -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
+```
+
+##### MySQL
 
 ```bash
 # Run TPCH workloads with result checking
-./bin/go-tpc tpch --sf=1 --check=true run
+go-tpc tpch --sf=1 --check=true run
 # Run TPCH workloads without result checking
-./bin/go-tpc tpch --sf=1 run
+go-tpc tpch --sf=1 run
 ```
 
-##### PostgreSQL & CockroachDB & AlloyDB & Yugabyte
-
-```
-./bin/go-tpc tpch run -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
-```
 #### Clean up
 
 ```bash
 # Cleanup
-./bin/go-tpc tpch cleanup
+go-tpc tpch cleanup
 ```
 
 ### CH-benCHmark
 
+CH-benCHmark is a hybrid benchmark that runs a transactional and an analytical workload.
+
 #### Prepare
 
-1. First please refer to the above instruction(`go-tpc tpcc --warehouses $warehouses prepare`) to prepare the TP part schema and populate data
+The preparation is a two-step process:
 
-2. Then uses `go-tpc ch prepare` to prepare the AP part schema and data
+1. Prepare the schema and data for the transactional part with `go-tpc tpcc --warehouses $warehouses prepare`.
+2. Prepare the schema and data for the analytical part with `go-tpc ch prepare`
 
-
-##### TiDB & MySQL
-```bash
-# Prepare TP data
-./bin/go-tpc tpcc --warehouses 10 prepare -T 4 -D test -H 127.0.0.1 -P 4000
-# Prepare AP data, create tiflash replica, and analyze table after data loaded
-./bin/go-tpc ch --analyze --tiflash-replica 1 prepare -D test -H 127.0.0.1 -P 4000
-```
-##### PostgreSQL & CockroachDB & AlloyDB & Yugabyte
+##### Postgres
 
 ``` bash
 # Prepare TP data
-./bin/go-tpc tpcc prepare -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable -T 4
+go-tpc tpcc prepare -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable -T 4
 # Prepare AP data
-./bin/go-tpc ch prepare -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
+go-tpc ch prepare -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
+```
+
+##### MySQL
+```bash
+# Prepare TP data
+go-tpc tpcc --warehouses 10 prepare -T 4 -D test -H 127.0.0.1 -P 4000
+# Prepare AP data, create tiflash replica, and analyze table after data loaded
+go-tpc ch --analyze --tiflash-replica 1 prepare -D test -H 127.0.0.1 -P 4000
 ```
 
 #### Run
 
-##### TiDB & MySQL
-```bash
-./bin/go-tpc ch --warehouses $warehouses -T $tpWorkers -t $apWorkers --time $measurement-time run
-```
-##### PostgreSQL & CockroachDB & AlloyDB & Yugabyte
+##### Postgres
 
+```bash
+go-tpc ch run -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
 ```
-./bin/go-tpc ch run -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
+
+##### MySQL
+```bash
+go-tpc ch --warehouses $warehouses -T $tpWorkers -t $apWorkers --time $measurement-time run
 ```
 
 ### Raw SQL
-`rawsql` command is used to execute sql from given sql files.
+
+The `rawsql` command is used to execute SQL from the provided SQL files.
 
 #### Run
 ```bash
-./bin/go-tpc rawsql run --query-files $path-to-query-files
+go-tpc rawsql run --query-files $path-to-query-files
 ```
