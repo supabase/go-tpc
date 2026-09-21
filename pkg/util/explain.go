@@ -1,26 +1,25 @@
 package util
 
 import (
+	"bytes"
 	"database/sql"
-	"github.com/jedib0t/go-pretty/table"
+
+	"github.com/olekukonko/tablewriter"
 )
 
 func RenderExplainAnalyze(rows *sql.Rows) (text string, err error) {
-	table := table.NewWriter()
-
 	cols, err := rows.Columns()
 	if err != nil {
 		return "", err
 	}
-	columns := make([]interface{}, len(cols))
-	for idx, column := range cols {
-		columns[idx] = column
-	}
-	table.AppendHeader(columns)
+
+	buf := new(bytes.Buffer)
+	tb := tablewriter.NewWriter(buf)
+	tb.Header(cols)
 
 	for rows.Next() {
 		rawResult := make([][]byte, len(cols))
-		row := make([]interface{}, len(cols))
+		row := make([]string, len(cols))
 		dest := make([]interface{}, len(cols))
 
 		for i := range rawResult {
@@ -34,7 +33,8 @@ func RenderExplainAnalyze(rows *sql.Rows) (text string, err error) {
 		for i, raw := range rawResult {
 			row[i] = string(raw)
 		}
-		table.AppendRow(row)
+		tb.Append(row)
 	}
-	return table.Render(), nil
+	tb.Render()
+	return buf.String(), nil
 }
