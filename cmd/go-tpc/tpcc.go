@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 	"github.com/supabase/go-tpc/pkg/measurement"
+	"github.com/supabase/go-tpc/pkg/util"
 	"github.com/supabase/go-tpc/pkg/workload"
 	"github.com/supabase/go-tpc/tpcc"
 )
@@ -60,6 +61,9 @@ func executeTpcc(action string) error {
 		if tpccConfig.OutputDir == "" {
 			fmt.Printf("Output Directory cannot be empty when generating files")
 			os.Exit(1)
+		}
+		if tpccConfig.Analyze {
+			util.StdErrLogger.Printf("[tpcc] --analyze is ignored with --output-type csv: no data is loaded into the database")
 		}
 		w, err = tpcc.NewCSVWorkloader(globalDB, &tpccConfig)
 	default:
@@ -117,6 +121,9 @@ func registerTpcc(root *cobra.Command) {
 		"generating file, separated by ','. Valid only if output is set. If this flag is not set, generate all tables by default")
 	cmdPrepare.PersistentFlags().IntVar(&tpccConfig.PrepareRetryCount, "retry-count", 50, "Retry count when errors occur")
 	cmdPrepare.PersistentFlags().DurationVar(&tpccConfig.PrepareRetryInterval, "retry-interval", 10*time.Second, "The interval for each retry")
+	cmdPrepare.PersistentFlags().BoolVar(&tpccConfig.Analyze, "analyze", false,
+		"After the data is loaded, refresh optimizer statistics (VACUUM ANALYZE on "+
+			"Postgres, ANALYZE TABLE on MySQL). Enable only if the server performs this automatically during the run (autovacuum, innodb_stats_auto_recalc).")
 
 	var cmdRun = &cobra.Command{
 		Use:   "run",
