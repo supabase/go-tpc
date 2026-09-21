@@ -97,6 +97,11 @@ type Config struct {
 	SpecifiedTables   string
 	UseClusteredIndex bool
 
+	// Analyze refreshes optimizer statistics once the data is loaded: VACUUM
+	// ANALYZE on postgres, ANALYZE TABLE on mysql. See analyzeSpecWarning for
+	// the TPC-C Clause 4.2.3(2) caveat.
+	Analyze bool
+
 	// connection, retry count when commiting statement fails, default 0
 	PrepareRetryCount    int
 	PrepareRetryInterval time.Duration

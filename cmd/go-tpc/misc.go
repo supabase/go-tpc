@@ -43,6 +43,27 @@ func checkPrepare(ctx context.Context, w workload.Workloader) error {
 	}
 }
 
+// tableAnalyzer is implemented by workloaders that can refresh optimizer
+// statistics for the tables they just loaded. tpcc.CSVWorkLoader deliberately
+// does not implement it: it writes files instead of loading tables.
+type tableAnalyzer interface {
+	AnalyzeTables(ctx context.Context) error
+}
+
+// analyzePrepared refreshes optimizer statistics after a successful
+// `tpcc prepare --analyze`. tpch and ch have their own --analyze, handled
+// inside their Prepare.
+func analyzePrepared(ctx context.Context, w workload.Workloader) error {
+	if w.Name() != "tpcc" || !tpccConfig.Analyze {
+		return nil
+	}
+	a, ok := w.(tableAnalyzer)
+	if !ok {
+		return nil
+	}
+	return a.AnalyzeTables(ctx)
+}
+
 func execute(timeoutCtx context.Context, w workload.Workloader, action string, threads, index int) error {
 	count := totalCount / threads
 
@@ -231,12 +252,18 @@ func executeWorkload(ctx context.Context, w workload.Workloader, threads int, ac
 	default:
 	}
 
-	var checkErr error
+	var postPrepareErr error
 	if action == "prepare" && workerErr == nil {
-		// Only run the post-prepare consistency check when every prepare worker
-		// succeeded; checking data a failed worker left incomplete would just
+		// Only run the post-prepare steps when every prepare worker succeeded;
+		// analyzing or checking data a failed worker left incomplete would just
 		// produce confusing secondary errors that obscure the real failure.
-		checkErr = checkPrepare(ctx, w)
+		//
+		// Analyze runs first: the consistency checks are full-table aggregates
+		// and a freshly loaded database has no statistics for them yet. It also
+		// has to run when --no-check skips the check itself.
+		if postPrepareErr = analyzePrepared(ctx, w); postPrepareErr == nil {
+			postPrepareErr = checkPrepare(ctx, w)
+		}
 	}
 	outputCancel()
 
@@ -245,5 +272,5 @@ func executeWorkload(ctx context.Context, w workload.Workloader, threads int, ac
 	if workerErr != nil {
 		return workerErr
 	}
-	return checkErr
+	return postPrepareErr
 }

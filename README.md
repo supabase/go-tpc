@@ -70,6 +70,11 @@ For example:
 
 ```
 ./bin/go-tpc tpcc prepare -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
+
+# Refresh optimizer statistics after loading (VACUUM ANALYZE on postgres, ANALYZE TABLE on mysql). 
+# Only enable if the server does this maintenance automatically during the run, i.e. autovacuum 
+# on Postgres or innodb_stats_auto_recalc on MySQL.
+./bin/go-tpc tpcc prepare --analyze -d postgres -U myuser -p '12345678' -D test -H 127.0.0.1 -P 5432 --conn-params sslmode=disable
 ```
 
 #### Run
