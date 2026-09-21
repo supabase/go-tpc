@@ -82,6 +82,21 @@ func executeTpcc(action string) error {
 		os.Exit(1)
 	}
 
+	// `analyze` operates on data this process did not load, so it skips the
+	// threaded load path. Like prepare's post-load steps it runs without
+	// the --time deadline, since VACUUM ANALYZE and the consistency checks
+	// are full-table scans.
+	if action == "analyze" {
+		if err := analyzeTables(globalCtx, w); err != nil {
+			return err
+		}
+		if err := checkPrepare(globalCtx, w); err != nil {
+			return err
+		}
+		fmt.Println("Finished")
+		return nil
+	}
+
 	timeoutCtx, cancel := context.WithTimeout(globalCtx, totalTime)
 	defer cancel()
 
@@ -160,7 +175,20 @@ func registerTpcc(root *cobra.Command) {
 		},
 	}
 
-	cmd.AddCommand(cmdRun, cmdPrepare, cmdCleanup, cmdCheck)
+	var cmdAnalyze = &cobra.Command{
+		Use:   "analyze",
+		Short: "Refresh optimizer statistics and check data consistency, without loading data",
+		Long: "Run VACUUM ANALYZE (Postgres) or ANALYZE TABLE (MySQL) on every TPCC table and then check\n" +
+			"data consistency. No data is generated or loaded, so this works on tables populated by\n" +
+			"other means, for example pg_restore.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			return executeTpcc("analyze")
+		},
+	}
+	cmdAnalyze.PersistentFlags().BoolVar(&tpccConfig.NoCheck, "no-check", false, "TPCC prepare check, default false")
+
+	cmd.AddCommand(cmdRun, cmdPrepare, cmdCleanup, cmdCheck, cmdAnalyze)
 
 	root.AddCommand(cmd)
 }

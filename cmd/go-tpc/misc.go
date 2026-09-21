@@ -64,6 +64,16 @@ func analyzePrepared(ctx context.Context, w workload.Workloader) error {
 	return a.AnalyzeTables(ctx)
 }
 
+// analyzeTables refreshes optimizer statistics unconditionally, for the
+// standalone `tpcc analyze` command.
+func analyzeTables(ctx context.Context, w workload.Workloader) error {
+	a, ok := w.(tableAnalyzer)
+	if !ok {
+		return fmt.Errorf("workload %s cannot analyze tables", w.Name())
+	}
+	return a.AnalyzeTables(ctx)
+}
+
 func execute(timeoutCtx context.Context, w workload.Workloader, action string, threads, index int) error {
 	count := totalCount / threads
 
