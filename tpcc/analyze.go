@@ -2,6 +2,7 @@ package tpcc
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -74,6 +75,17 @@ func (w *Workloader) AnalyzeTables(ctx context.Context) error {
 	util.StdErrLogger.Print(analyzeSpecWarning)
 	w.warnIfAutoMaintenanceDisabled(ctx)
 
+	// Use a dedicated connection to raise the statement timeout explicitly.
+	conn, err := w.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection for analyze: %w", err)
+	}
+	defer conn.Close()
+
+	if err := raiseStatementTimeout(ctx, conn, w.cfg.Driver); err != nil {
+		return fmt.Errorf("raise statement timeout: %w", err)
+	}
+
 	for _, tbl := range tables {
 		stmt := analyzeStmt(w.cfg.Driver, tbl)
 		if stmt == "" {
@@ -90,12 +102,30 @@ func (w *Workloader) AnalyzeTables(ctx context.Context) error {
 		// On MySQL this discards the result set ANALYZE TABLE returns, so a
 		// per-table failure reported as a row with Msg_type='Error' is not
 		// surfaced.
-		if _, err := w.db.ExecContext(ctx, stmt); err != nil {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("analyze table %s: %w", tbl, err)
 		}
 		fmt.Printf("analyze table %s done in %s\n", tbl, time.Since(start).Round(time.Millisecond))
 	}
 	return nil
+}
+
+// analyzeStatementTimeout bounds the raised statement timeout applied for
+// the analyze statements. VACUUM ANALYZE on a large table can run far
+// longer than a typical query timeout, but a run that's still stuck after
+// this timeout is treated as failure.
+const analyzeStatementTimeout = "1h"
+
+// raiseStatementTimeout raises the server-side statement timeout on the
+// connection used for the analyze statements to analyzeStatementTimeout
+//
+// MySQL has no comparable per-statement timeout for ANALYZE TABLE.
+func raiseStatementTimeout(ctx context.Context, conn *sql.Conn, driver string) error {
+	if driver != "postgres" {
+		return nil
+	}
+	_, err := conn.ExecContext(ctx, "SET statement_timeout = '"+analyzeStatementTimeout+"'")
+	return err
 }
 
 // warnIfAutoMaintenanceDisabled warns when the server will not repeat the
