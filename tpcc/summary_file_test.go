@@ -23,7 +23,7 @@ func TestWriteSummaryFile_WritesStructuredJSON(t *testing.T) {
 			{Transaction: "NEW_ORDER", Status: "ok", Count: 153943, TPM: tpm, AvgLatencyMs: 6.6},
 			{Transaction: "NEW_ORDER", Status: "error", Count: 12, TPM: 0.4},
 		},
-		Tpm:          &tpm,
+		Tpm:           &tpm,
 		TpmTotal:      &tpmTotal,
 		EfficiencyPct: &efc,
 	}

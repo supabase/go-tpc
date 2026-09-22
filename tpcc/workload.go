@@ -473,7 +473,7 @@ func outputWaitTimesMeasurement(outputStyle string, prefix string, opMeasurement
 // need Warehouses and aren't generic enough to live in pkg/measurement.
 type tpccSummaryDoc struct {
 	Transactions  []measurement.OpSummary `json:"transactions"`
-	Tpm          *float64                `json:"tpm,omitempty"`
+	Tpm           *float64                `json:"tpm,omitempty"`
 	TpmTotal      *float64                `json:"tpm_total,omitempty"`
 	EfficiencyPct *float64                `json:"efficiency_pct,omitempty"`
 }
