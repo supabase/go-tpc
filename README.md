@@ -22,7 +22,7 @@ and the following databases:
 * Postgres and compatible databases such as CockroachDB, AlloyDB or Yugabyte
 * MySQL and compatible databases such as TiDB
 
-Our primary target with the most complete coverage for practical workloads is the TPC-C workload for Postgres but we strive to keep feature paritz across all supported workloads and database systems.
+Our primary target with the most complete coverage for practical workloads is the TPC-C workload for Postgres but we strive to keep feature parity across all supported workloads and database systems.
 
 ## Install
 

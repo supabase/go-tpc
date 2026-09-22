@@ -113,7 +113,7 @@ type Config struct {
 	// transaction, status) to this path. Empty disables it.
 	RawSamplesFile string
 	// if non-empty, makes run write a structured, end-of-run
-	// summary (the "[Summary]" table's figures, plus tpmC/tpm_total/
+	// summary (the "[Summary]" table's figures, plus tpm/tpm_total/
 	// efficiency_pct) as JSON to this path. Empty disables it.
 	SummaryFile string
 
@@ -469,11 +469,11 @@ func outputWaitTimesMeasurement(outputStyle string, prefix string, opMeasurement
 
 // tpccSummaryDoc is the --summary-file document: the generic per-transaction
 // figures measurement.Measurement.Summary already computes, plus the three
-// tpcc-specific figures ([Summary]'s tpmC/tpmTotal/efficiency line) that
+// tpcc-specific figures ([Summary]'s tpm/tpmTotal/efficiency line) that
 // need Warehouses and aren't generic enough to live in pkg/measurement.
 type tpccSummaryDoc struct {
 	Transactions  []measurement.OpSummary `json:"transactions"`
-	TpmC          *float64                `json:"tpmC,omitempty"`
+	Tpm          *float64                `json:"tpm,omitempty"`
 	TpmTotal      *float64                `json:"tpm_total,omitempty"`
 	EfficiencyPct *float64                `json:"efficiency_pct,omitempty"`
 }
@@ -521,24 +521,24 @@ func (w *Workloader) OutputStats(ifSummaryReport bool) {
 		if newOrderHist != nil && !newOrderHist.Empty() {
 			result := newOrderHist.GetInfo()
 			const specWarehouseFactor = 12.86
-			tpmC := result.Ops * 60
+			tpm := result.Ops * 60
 			tpmTotal := totalOps * 60
-			efc := 100 * tpmC / (specWarehouseFactor * float64(w.cfg.Warehouses))
-			doc.TpmC, doc.TpmTotal, doc.EfficiencyPct = &tpmC, &tpmTotal, &efc
+			efc := 100 * tpm / (specWarehouseFactor * float64(w.cfg.Warehouses))
+			doc.Tpm, doc.TpmTotal, doc.EfficiencyPct = &tpm, &tpmTotal, &efc
 			lines := [][]string{
 				{
-					util.FloatToOneString(tpmC),
+					util.FloatToOneString(tpm),
 					util.FloatToOneString(tpmTotal),
 					util.FloatToOneString(efc) + "%",
 				},
 			}
 			switch w.cfg.OutputStyle {
 			case util.OutputStylePlain:
-				util.RenderString("tpmC: %s, tpmTotal: %s, efficiency: %s\n", nil, lines)
+				util.RenderString("tpm: %s, tpmTotal: %s, efficiency: %s\n", nil, lines)
 			case util.OutputStyleTable:
-				util.RenderTable([]string{"tpmC", "tpmTotal", "efficiency"}, lines)
+				util.RenderTable([]string{"tpm", "tpmTotal", "efficiency"}, lines)
 			case util.OutputStyleJson:
-				util.RenderJson([]string{"tpmC", "tpmTotal", "efficiency"}, lines)
+				util.RenderJson([]string{"tpm", "tpmTotal", "efficiency"}, lines)
 			}
 		}
 		if err := writeSummaryFile(w.cfg.SummaryFile, doc); err != nil {
