@@ -4,13 +4,15 @@ on:
     tags: ['v*']
     branches: [ master ]
 
+# Never cancel a run mid-publish
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
@@ -48,12 +50,59 @@ jobs:
 
       - name: Update latest release
         if: github.event.ref == 'refs/heads/master'
-        run: |
-          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create latest \
-            --prerelease \
-            --title "Latest Build (${{ github.sha }})" \
-            --notes "Development build: \`${{ github.sha }}\`" \
-            *.tar.gz
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Force-move the stable tag instead of delete + recreate, so the ref never disappears.
+          git tag -f latest "$SHA"
+          git push -f origin refs/tags/latest
+
+          # Upsert the release. Deleting and recreating it 404s every consumer in the meantime.
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest \
+              --prerelease \
+              --draft=false \
+              --title "Latest Build ($SHA)" \
+              --notes "Development build: \`$SHA\`"
+          else
+            gh release create latest \
+              --prerelease \
+              --title "Latest Build ($SHA)" \
+              --notes "Development build: \`$SHA\`"
+          fi
+
+          gh release upload latest --clobber -- *.tar.gz
+
+          # gh publishes as a separate API call after uploading assets; make sure it stuck.
+          gh release edit latest --draft=false
+
+      - name: Verify latest release is public
+        if: github.event.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          draft=true
+          for i in 1 2 3 4 5; do
+            draft=$(gh release view latest --json isDraft -q .isDraft)
+            [ "$draft" = "false" ] && break
+            echo "latest is still a draft (attempt $i); re-publishing"
+            gh release edit latest --draft=false || true
+            sleep 10
+          done
+          if [ "$draft" != "false" ]; then
+            echo "::error::latest release is still a draft after 5 attempts"
+            exit 1
+          fi
+
+          for asset in go-tpc_latest_linux_amd64.tar.gz go-tpc_latest_linux_arm64.tar.gz \
+                       go-tpc_latest_darwin_amd64.tar.gz go-tpc_latest_darwin_arm64.tar.gz; do
+            url="https://github.com/${{ github.repository }}/releases/download/latest/$asset"
+            # Anonymous ranged GET: exactly what cloud-init sees. --retry-all-errors covers CDN lag.
+            curl -fsSL -r 0-0 -o /dev/null --retry 5 --retry-delay 10 --retry-all-errors "$url" \
+              || { echo "::error::$url is not publicly downloadable"; exit 1; }
+          done
