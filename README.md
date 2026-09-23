@@ -31,7 +31,7 @@ Use one of the following approaches:
 ### Install script (recommended)
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/supabase/go-tpc/master/install.sh | sh
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/supabase/go-tpc/main/install.sh | sh
 ```
 
 ### Download binary
