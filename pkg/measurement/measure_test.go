@@ -4,10 +4,12 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +17,12 @@ import (
 )
 
 func noopRender(string, string, map[string]*Histogram) {}
+
+// captureRender records the histograms Output hands the renderer, which is
+// what the command-line tables are built from.
+func captureRender(dst *map[string]*Histogram) func(string, string, map[string]*Histogram) {
+	return func(_, _ string, hists map[string]*Histogram) { *dst = hists }
+}
 
 func TestAppendRawSamples_DisabledByDefault(t *testing.T) {
 	m := NewMeasurement()
@@ -65,8 +73,10 @@ func TestAppendRawSamples_WritesHeaderAndRowsPerTick(t *testing.T) {
 	m.Measure("new_order", 5*time.Millisecond, nil)
 	m.Output(false, util.OutputStylePlain, noopRender)
 	rows = readCSV(t, path)
-	if len(rows) != 4 { // header + 3 data rows across both ticks
-		t.Fatalf("after tick 2: want 4 rows, got %d: %v", len(rows), rows)
+	// header + 2 rows for tick 1 + 2 rows for tick 2. Tick 2 recorded only a
+	// success, but the error row is still written, with count 0.
+	if len(rows) != 5 {
+		t.Fatalf("after tick 2: want 5 rows, got %d: %v", len(rows), rows)
 	}
 
 	// t_seconds must be non-decreasing across ticks and parse as a float.
@@ -87,8 +97,8 @@ func TestAppendRawSamples_WritesHeaderAndRowsPerTick(t *testing.T) {
 	// Finalizing must close the file without losing anything written so far.
 	m.Output(true, util.OutputStylePlain, noopRender)
 	rows = readCSV(t, path)
-	if len(rows) != 4 {
-		t.Fatalf("after finalize: want 4 rows still, got %d: %v", len(rows), rows)
+	if len(rows) != 5 {
+		t.Fatalf("after finalize: want 5 rows still, got %d: %v", len(rows), rows)
 	}
 }
 
@@ -158,4 +168,158 @@ func readCSV(t *testing.T, path string) [][]string {
 		t.Fatalf("read csv %s: %v", path, err)
 	}
 	return rows
+}
+
+func TestInterval_ElapsedSpansWholeTick(t *testing.T) {
+	const idle = 60 * time.Millisecond
+
+	m := NewMeasurement()
+	// Nothing happens for a while, then a single transaction lands just before
+	// the tick is flushed. The window is still the whole tick.
+	time.Sleep(idle)
+	m.Measure("new_order", time.Millisecond, nil)
+
+	var tick map[string]*Histogram
+	m.Output(false, util.OutputStylePlain, captureRender(&tick))
+
+	info := tick["new_order"].GetInfo()
+	if info.Elapsed < idle.Seconds() {
+		t.Fatalf("Elapsed = %vs, want at least %vs: the window must start at the previous flush, not at the first transaction",
+			info.Elapsed, idle.Seconds())
+	}
+	if want := float64(info.Count) / info.Elapsed; info.Ops != want {
+		t.Errorf("Ops = %v, want %v", info.Ops, want)
+	}
+}
+
+func TestInterval_WindowsAreContiguous(t *testing.T) {
+	const gap = 30 * time.Millisecond
+
+	t0 := time.Now()
+	m := NewMeasurement()
+	var tick map[string]*Histogram
+	render := captureRender(&tick)
+
+	m.Measure("new_order", time.Millisecond, nil)
+	m.Output(false, util.OutputStylePlain, render)
+	t1 := time.Now()
+	first := tick["new_order"].GetInfo().Elapsed
+
+	time.Sleep(gap)
+	m.Measure("new_order", time.Millisecond, nil)
+	m.Output(false, util.OutputStylePlain, render)
+	t2 := time.Now()
+	second := tick["new_order"].GetInfo().Elapsed
+
+	if first > t1.Sub(t0).Seconds() {
+		t.Errorf("first window %vs exceeds the wall time before the first flush (%vs)", first, t1.Sub(t0).Seconds())
+	}
+	if second < gap.Seconds() {
+		t.Errorf("second window = %vs, want at least the %vs gap between flushes", second, gap.Seconds())
+	}
+	if second > t2.Sub(t1).Seconds() {
+		t.Errorf("second window %vs exceeds the wall time between flushes (%vs)", second, t2.Sub(t1).Seconds())
+	}
+	// Contiguous, not overlapping: the two windows together cover no more than
+	// the whole run.
+	if total := t2.Sub(t0).Seconds(); first+second > total {
+		t.Errorf("windows overlap: %vs + %vs > %vs", first, second, total)
+	}
+}
+
+func TestInterval_IdleTickWritesZeroRowToCSVOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "raw.csv")
+	m := NewMeasurement(WithRawSamplesFile(path))
+
+	m.Measure("new_order", 10*time.Millisecond, nil)
+	m.Output(false, util.OutputStylePlain, noopRender)
+	busy := len(readCSV(t, path))
+
+	// Second tick records nothing at all.
+	var tick map[string]*Histogram
+	m.Output(false, util.OutputStylePlain, captureRender(&tick))
+
+	rows := readCSV(t, path)
+	if len(rows) != busy+2 {
+		t.Fatalf("idle tick wrote %d rows, want 2 (ok and error for new_order): %v", len(rows)-busy, rows)
+	}
+	for _, r := range rows[busy:] {
+		if r[1] != "NEW_ORDER" {
+			t.Errorf("transaction = %q, want NEW_ORDER", r[1])
+		}
+		if r[3] != "0" {
+			t.Errorf("count = %q, want 0", r[3])
+		}
+		if r[4] != "0.0" {
+			t.Errorf("tpm = %q, want 0.0", r[4])
+		}
+	}
+
+	// The command line stays quiet: renderers skip empty histograms, so the
+	// zero rows reach the raw-samples file only.
+	hist, ok := tick["new_order"]
+	if !ok {
+		t.Fatal("idle tick did not carry new_order forward")
+	}
+	if !hist.Empty() {
+		t.Error("idle tick histogram is not empty, so it would be rendered to the command line")
+	}
+}
+
+func TestInterval_TpmIsCountOverTheTick(t *testing.T) {
+	m := NewMeasurement()
+	for i := 0; i < 5; i++ {
+		m.Measure("new_order", time.Millisecond, nil)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	var tick map[string]*Histogram
+	m.Output(false, util.OutputStylePlain, captureRender(&tick))
+
+	info := tick["new_order"].GetInfo()
+	if info.Count != 5 {
+		t.Fatalf("Count = %d, want 5", info.Count)
+	}
+	tpm := info.Ops * 60
+	if want := float64(info.Count) * 60 / info.Elapsed; math.Abs(tpm-want) > 1e-9*want {
+		t.Errorf("tpm = %v, want %v", tpm, want)
+	}
+
+	// An empty histogram must report zero, never NaN or +Inf.
+	errInfo := tick["new_order_ERR"].GetInfo()
+	if errInfo.Ops != 0 {
+		t.Errorf("empty histogram Ops = %v, want 0", errInfo.Ops)
+	}
+}
+
+func TestInterval_ConcurrentMeasureAndOutput(t *testing.T) {
+	m := NewMeasurement(WithRawSamplesFile(filepath.Join(t.TempDir(), "raw.csv")))
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			var recordErr error
+			if i%2 == 0 {
+				recordErr = errors.New("boom")
+			}
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					m.Measure("new_order", time.Millisecond, recordErr)
+					m.Measure("payment", time.Millisecond, nil)
+				}
+			}
+		}(i)
+	}
+	for i := 0; i < 100; i++ {
+		m.Output(false, util.OutputStylePlain, noopRender)
+	}
+	close(stop)
+	wg.Wait()
+	m.Output(true, util.OutputStylePlain, noopRender)
 }

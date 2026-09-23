@@ -65,6 +65,16 @@ func (h *Histogram) Freeze(now time.Time) {
 	h.frozenAt = now
 }
 
+// SetWindow pins the histogram's reporting window to [start, end]. Interval
+// histograms use it so Elapsed is the length of the tick rather than the span
+// since the tick's first transaction, which would otherwise inflate Ops.
+func (h *Histogram) SetWindow(start, end time.Time) {
+	h.m.Lock()
+	defer h.m.Unlock()
+	h.startTime = start
+	h.frozenAt = end
+}
+
 func (h *Histogram) Empty() bool {
 	h.m.Lock()
 	defer h.m.Unlock()
@@ -100,7 +110,10 @@ func (h *Histogram) GetInfo() HistInfo {
 	avg := time.Duration(h.Mean()).Seconds() * 1000
 	elapsed := now.Sub(h.startTime).Seconds()
 	count := h.TotalCount()
-	ops := float64(count) / elapsed
+	var ops float64
+	if elapsed > 0 {
+		ops = float64(count) / elapsed
+	}
 	info := HistInfo{
 		Elapsed: elapsed,
 		Sum:     sum,

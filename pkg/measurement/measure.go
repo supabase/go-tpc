@@ -38,6 +38,10 @@ type Measurement struct {
 
 	// startTime anchors t_seconds in the raw-samples file.
 	startTime time.Time
+	// curStartTime is the instant the current interval window opened, i.e. the
+	// previous flush. Interval histograms are pinned to
+	// [curStartTime, flush instant] so their Ops covers the whole tick.
+	curStartTime time.Time
 
 	rawSamplesFile string
 	rawMu          sync.Mutex
@@ -76,12 +80,17 @@ func WithRawSamplesFile(path string) func(*Measurement) {
 	return func(m *Measurement) { m.rawSamplesFile = path }
 }
 
-func (m *Measurement) getHist(op string, err error, current bool) *Histogram {
-	opMeasurement := m.OpSumMeasurement
+// opMeasurementLocked returns the interval or cumulative map. Callers must hold
+// m's read or write lock: takeCurMeasurement replaces OpCurMeasurement outright,
+// so reading the field itself has to be synchronised.
+func (m *Measurement) opMeasurementLocked(current bool) map[string]*Histogram {
 	if current {
-		opMeasurement = m.OpCurMeasurement
+		return m.OpCurMeasurement
 	}
+	return m.OpSumMeasurement
+}
 
+func (m *Measurement) getHist(op string, err error, current bool) *Histogram {
 	// Create hist of {op} and {op}_ERR at the same time, or else the TPM would be incorrect
 	opPairedKey := fmt.Sprintf("%s_ERR", op)
 	if err != nil {
@@ -89,15 +98,22 @@ func (m *Measurement) getHist(op string, err error, current bool) *Histogram {
 	}
 
 	m.RLock()
-	opM, ok := opMeasurement[op]
+	opM, ok := m.opMeasurementLocked(current)[op]
 	m.RUnlock()
-	if !ok {
-		opM = NewHistogram(m.MinLatency, m.MaxLatency, m.SigFigs)
-		opPairedM := NewHistogram(m.MinLatency, m.MaxLatency, m.SigFigs)
-		m.Lock()
-		opMeasurement[op] = opM
-		opMeasurement[opPairedKey] = opPairedM
-		m.Unlock()
+	if ok {
+		return opM
+	}
+
+	m.Lock()
+	defer m.Unlock()
+	opMeasurement := m.opMeasurementLocked(current)
+	if opM, ok = opMeasurement[op]; ok {
+		return opM
+	}
+	opM = NewHistogram(m.MinLatency, m.MaxLatency, m.SigFigs)
+	opMeasurement[op] = opM
+	if _, ok := opMeasurement[opPairedKey]; !ok {
+		opMeasurement[opPairedKey] = NewHistogram(m.MinLatency, m.MaxLatency, m.SigFigs)
 	}
 	return opM
 }
@@ -107,11 +123,34 @@ func (m *Measurement) measure(op string, err error, lan time.Duration) {
 	m.getHist(op, err, false).Measure(lan)
 }
 
-func (m *Measurement) takeCurMeasurement() (ret map[string]*Histogram) {
-	m.RLock()
-	defer m.RUnlock()
-	ret, m.OpCurMeasurement = m.OpCurMeasurement, make(map[string]*Histogram, 16)
-	return
+// takeCurMeasurement detaches the current interval's histograms and opens the
+// next window at now. Each detached histogram is pinned to the window it
+// actually covers, so Ops is count over the full tick rather than count over
+// the span since the tick's first transaction.
+//
+// The next window is seeded with a fresh histogram for every operation seen so
+// far, so a tick with no transactions still reports a zero row instead of
+// disappearing from the series. getHist only ever adds an operation once it
+// records something (and always adds its _ERR twin alongside), so seeding from
+// every key in OpSumMeasurement gives each operation the same set of rows in
+// every tick from the one it first appears in.
+func (m *Measurement) takeCurMeasurement(now time.Time) map[string]*Histogram {
+	m.Lock()
+	tick := m.OpCurMeasurement
+	start := m.curStartTime
+	m.curStartTime = now
+
+	next := make(map[string]*Histogram, len(m.OpSumMeasurement))
+	for op := range m.OpSumMeasurement {
+		next[op] = NewHistogram(m.MinLatency, m.MaxLatency, m.SigFigs)
+	}
+	m.OpCurMeasurement = next
+	m.Unlock()
+
+	for _, hist := range tick {
+		hist.SetWindow(start, now)
+	}
+	return tick
 }
 
 // Freeze fixes now as the stop instant for every histogram in
@@ -149,22 +188,26 @@ func (m *Measurement) Output(ifSummaryReport bool, outputStyle string, outputFun
 		return
 	}
 	// Clear current measure data every time
-	var opCurMeasurement = m.takeCurMeasurement()
-	m.RLock()
-	defer m.RUnlock()
-	outputFunc(outputStyle, "[Current] ", opCurMeasurement)
-	if err := m.appendRawSamples(opCurMeasurement); err != nil {
+	now := time.Now()
+	tick := m.takeCurMeasurement(now)
+	// The renderers skip empty histograms, so the zero-count entries seeded by
+	// takeCurMeasurement reach the raw-samples file only.
+	outputFunc(outputStyle, "[Current] ", tick)
+	if err := m.appendRawSamples(now, tick); err != nil {
 		fmt.Fprintf(os.Stderr, "raw samples file: %v\n", err)
 	}
 }
 
-// appendRawSamples writes one row per non-empty (operation, status) in this
-// tick's measurements to rawSamplesFile, flushing immediately after.
-func (m *Measurement) appendRawSamples(tick map[string]*Histogram) error {
+// appendRawSamples writes one row per (operation, status) in this tick's
+// measurements to rawSamplesFile, flushing immediately after. Operations that
+// recorded nothing this tick are written with count 0 and tpm 0 so the file is
+// a regular time series: every tick contributes a row for every operation seen
+// so far, and averaging the tpm column does not silently drop idle ticks.
+func (m *Measurement) appendRawSamples(now time.Time, tick map[string]*Histogram) error {
 	if m.rawSamplesFile == "" {
 		return nil
 	}
-	elapsed := time.Since(m.startTime).Seconds()
+	elapsed := now.Sub(m.startTime).Seconds()
 
 	keys := make([]string, 0, len(tick))
 	for op := range tick {
@@ -180,11 +223,7 @@ func (m *Measurement) appendRawSamples(tick map[string]*Histogram) error {
 		}
 	}
 	for _, op := range keys {
-		hist := tick[op]
-		if hist.Empty() {
-			continue
-		}
-		info := hist.GetInfo()
+		info := tick[op].GetInfo()
 		name, status := splitOpStatus(op)
 		row := []string{
 			util.FloatToOneString(elapsed),
@@ -318,8 +357,9 @@ func NewMeasurement(opts ...func(*Measurement)) *Measurement {
 		SigFigs:          sigFigs,
 		OpCurMeasurement: make(map[string]*Histogram, 16),
 		OpSumMeasurement: make(map[string]*Histogram, 16),
-		startTime:        time.Now(),
 	}
+	m.startTime = time.Now()
+	m.curStartTime = m.startTime
 	for _, opt := range opts {
 		if opt != nil {
 			opt(m)
