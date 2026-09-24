@@ -3,7 +3,6 @@ package tpcc
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"math/rand"
 
 	"github.com/supabase/go-tpc/pkg/sink"
@@ -21,7 +20,6 @@ const (
 )
 
 func (w *Workloader) loadItem(ctx context.Context) error {
-	fmt.Printf("load to item\n")
 	s := getTPCCState(ctx)
 	hint := "INSERT INTO item (i_id, i_im_id, i_name, i_price, i_data) VALUES "
 
@@ -46,7 +44,6 @@ func (w *Workloader) loadItem(ctx context.Context) error {
 }
 
 func (w *Workloader) loadWarehouse(ctx context.Context, warehouse int) error {
-	fmt.Printf("load to warehouse in warehouse %d\n", warehouse)
 	s := getTPCCState(ctx)
 	hint := "INSERT INTO warehouse (w_id, w_name, w_street_1, w_street_2, w_city, w_state, w_zip, w_tax, w_ytd) VALUES "
 
@@ -71,7 +68,6 @@ func (w *Workloader) loadWarehouse(ctx context.Context, warehouse int) error {
 }
 
 func (w *Workloader) loadStock(ctx context.Context, warehouse int) error {
-	fmt.Printf("load to stock in warehouse %d\n", warehouse)
 
 	s := getTPCCState(ctx)
 
@@ -112,7 +108,6 @@ s_dist_07, s_dist_08, s_dist_09, s_dist_10, s_ytd, s_order_cnt, s_remote_cnt, s_
 }
 
 func (w *Workloader) loadDistrict(ctx context.Context, warehouse int) error {
-	fmt.Printf("load to district in warehouse %d\n", warehouse)
 
 	s := getTPCCState(ctx)
 
@@ -147,7 +142,6 @@ d_city, d_state, d_zip, d_tax, d_ytd, d_next_o_id) VALUES `
 }
 
 func (w *Workloader) loadCustomer(ctx context.Context, warehouse int, district int) error {
-	fmt.Printf("load to customer in warehouse %d district %d\n", warehouse, district)
 
 	s := getTPCCState(ctx)
 
@@ -203,7 +197,6 @@ c_discount, c_balance, c_ytd_payment, c_payment_cnt, c_delivery_cnt, c_data) VAL
 }
 
 func (w *Workloader) loadHistory(ctx context.Context, warehouse int, district int) error {
-	fmt.Printf("load to history in warehouse %d district %d\n", warehouse, district)
 
 	s := getTPCCState(ctx)
 
@@ -233,7 +226,6 @@ func (w *Workloader) loadHistory(ctx context.Context, warehouse int, district in
 }
 
 func (w *Workloader) loadOrder(ctx context.Context, warehouse int, district int) ([]int, error) {
-	fmt.Printf("load to orders in warehouse %d district %d\n", warehouse, district)
 
 	s := getTPCCState(ctx)
 
@@ -277,7 +269,6 @@ o_carrier_id, o_ol_cnt, o_all_local) VALUES `
 }
 
 func (w *Workloader) loadNewOrder(ctx context.Context, warehouse int, district int) error {
-	fmt.Printf("load to new_order in warehouse %d district %d\n", warehouse, district)
 
 	s := getTPCCState(ctx)
 
@@ -303,7 +294,6 @@ func (w *Workloader) loadNewOrder(ctx context.Context, warehouse int, district i
 }
 
 func (w *Workloader) loadOrderLine(ctx context.Context, warehouse int, district int, olCnts []int) error {
-	fmt.Printf("load to order_line in warehouse %d district %d\n", warehouse, district)
 
 	s := getTPCCState(ctx)
 

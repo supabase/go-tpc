@@ -161,7 +161,6 @@ func (c *CSVWorkLoader) loadItem(ctx context.Context) error {
 	if !c.tables[tableItem] {
 		return nil
 	}
-	fmt.Printf("load to item\n")
 	s := getTPCCState(ctx)
 	l := s.loaders[tableItem]
 
@@ -188,7 +187,6 @@ func (c *CSVWorkLoader) loadWarehouse(ctx context.Context, warehouse int) error 
 	if !c.tables[tableWareHouse] {
 		return nil
 	}
-	fmt.Printf("load to warehouse in warehouse %d\n", warehouse)
 	s := getTPCCState(ctx)
 	l := s.loaders[tableWareHouse]
 
@@ -215,7 +213,6 @@ func (c *CSVWorkLoader) loadStock(ctx context.Context, warehouse int) error {
 	if !c.tables[tableStock] {
 		return nil
 	}
-	fmt.Printf("load to stock in warehouse %d\n", warehouse)
 
 	s := getTPCCState(ctx)
 	l := s.loaders[tableStock]
@@ -255,7 +252,6 @@ func (c *CSVWorkLoader) loadDistrict(ctx context.Context, warehouse int) error {
 	if !c.tables[tableDistrict] {
 		return nil
 	}
-	fmt.Printf("load to district in warehouse %d\n", warehouse)
 
 	s := getTPCCState(ctx)
 	l := s.loaders[tableDistrict]
@@ -290,7 +286,6 @@ func (c *CSVWorkLoader) loadCustomer(ctx context.Context, warehouse int, distric
 	if !c.tables[tableCustomer] {
 		return nil
 	}
-	fmt.Printf("load to customer in warehouse %d district %d\n", warehouse, district)
 
 	s := getTPCCState(ctx)
 	l := s.loaders[tableCustomer]
@@ -345,7 +340,6 @@ func (c *CSVWorkLoader) loadHistory(ctx context.Context, warehouse int, district
 	if !c.tables[tableHistory] {
 		return nil
 	}
-	fmt.Printf("load to history in warehouse %d district %d\n", warehouse, district)
 
 	s := getTPCCState(ctx)
 	l := s.loaders[tableHistory]
@@ -377,7 +371,6 @@ func (c *CSVWorkLoader) loadOrder(ctx context.Context, warehouse int, district i
 	if !c.tables[tableOrders] {
 		return nil, nil
 	}
-	fmt.Printf("load to orders in warehouse %d district %d\n", warehouse, district)
 
 	s := getTPCCState(ctx)
 	l := s.loaders[tableOrders]
@@ -418,7 +411,6 @@ func (c *CSVWorkLoader) loadNewOrder(ctx context.Context, warehouse int, distric
 	if !c.tables[tableNewOrder] {
 		return nil
 	}
-	fmt.Printf("load to new_order in warehouse %d district %d\n", warehouse, district)
 
 	s := getTPCCState(ctx)
 
@@ -447,7 +439,6 @@ func (c *CSVWorkLoader) loadOrderLine(ctx context.Context, warehouse int,
 	if !c.tables[tableOrderLine] {
 		return nil
 	}
-	fmt.Printf("load to order_line in warehouse %d district %d\n", warehouse, district)
 
 	s := getTPCCState(ctx)
 

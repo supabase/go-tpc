@@ -57,6 +57,12 @@ var (
 
 	globalDB  *sql.DB
 	globalCtx context.Context
+
+	// interactive reports whether stdout is an interactive terminal. When it
+	// isn't (e.g. output redirected to a file or CI log), periodic progress
+	// ticks are silenced to avoid flooding captured logs; only warnings,
+	// errors, and the final summary are printed.
+	interactive = util.IsInteractiveStdout()
 )
 
 const (
