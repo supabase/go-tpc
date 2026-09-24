@@ -176,12 +176,25 @@ func (m *Measurement) getOpName() []string {
 	return res
 }
 
-// Output prints the measurement summary.
+// CurrentPrefix and SummaryPrefix are the prefixes Output passes to
+// outputFunc, letting a renderer tell a periodic tick apart from the final
+// summary -- e.g. to suppress the tick's own printing in a non-interactive
+// terminal while leaving unrelated per-tick side effects (Prometheus gauge
+// updates, the raw-samples-file row below) unconditional.
+const (
+	CurrentPrefix = "[Current] "
+	SummaryPrefix = "[Summary] "
+)
+
+// Output always hands outputFunc the tick (or final summary), whether or not
+// it prints anything: outputFunc may have side effects beyond rendering to
+// stdout (see CurrentPrefix), and the raw-samples-file append is likewise
+// unconditional regardless of what outputFunc does with the data.
 func (m *Measurement) Output(ifSummaryReport bool, outputStyle string, outputFunc func(string, string, map[string]*Histogram)) {
 	if ifSummaryReport {
 		m.RLock()
 		defer m.RUnlock()
-		outputFunc(outputStyle, "[Summary] ", m.OpSumMeasurement)
+		outputFunc(outputStyle, SummaryPrefix, m.OpSumMeasurement)
 		if err := m.closeRawSamples(); err != nil {
 			fmt.Fprintf(os.Stderr, "raw samples file: %v\n", err)
 		}
@@ -192,7 +205,7 @@ func (m *Measurement) Output(ifSummaryReport bool, outputStyle string, outputFun
 	tick := m.takeCurMeasurement(now)
 	// The renderers skip empty histograms, so the zero-count entries seeded by
 	// takeCurMeasurement reach the raw-samples file only.
-	outputFunc(outputStyle, "[Current] ", tick)
+	outputFunc(outputStyle, CurrentPrefix, tick)
 	if err := m.appendRawSamples(now, tick); err != nil {
 		fmt.Fprintf(os.Stderr, "raw samples file: %v\n", err)
 	}
