@@ -403,6 +403,15 @@ func (w *Workloader) Cleanup(ctx context.Context, threadID int) error {
 	return nil
 }
 
+// quietTick reports whether a periodic (non-summary) tick's table should be
+// suppressed: stdout isn't an interactive terminal, so printing it would just
+// flood a captured CI log. The final summary (prefix == measurement.SummaryPrefix)
+// always prints regardless, and callers must run any other per-tick side
+// effects (Prometheus gauges, the raw-samples-file row) before checking this.
+func quietTick(prefix string) bool {
+	return prefix == measurement.CurrentPrefix && !util.IsInteractiveStdout()
+}
+
 func outputRtMeasurement(outputStyle string, prefix string, opMeasurement map[string]*measurement.Histogram) {
 	keys := make([]string, 0, len(opMeasurement))
 	for k := range opMeasurement {
@@ -431,6 +440,9 @@ func outputRtMeasurement(outputStyle string, prefix string, opMeasurement map[st
 			lines = append(lines, line)
 		}
 	}
+	if quietTick(prefix) {
+		return
+	}
 	switch outputStyle {
 	case util.OutputStylePlain:
 		util.RenderString("%s%-6s - %s\n", []string{"Prefix", "Operation", "Takes(s)", "Count", "TPM", "Sum(ms)", "Avg(ms)", "50th(ms)", "90th(ms)", "95th(ms)", "99th(ms)", "99.9th(ms)", "Max(ms)"}, lines)
@@ -442,6 +454,9 @@ func outputRtMeasurement(outputStyle string, prefix string, opMeasurement map[st
 }
 
 func outputWaitTimesMeasurement(outputStyle string, prefix string, opMeasurement map[string]*measurement.Histogram) {
+	if quietTick(prefix) {
+		return
+	}
 	keys := make([]string, len(opMeasurement))
 	var i = 0
 	for k := range opMeasurement {

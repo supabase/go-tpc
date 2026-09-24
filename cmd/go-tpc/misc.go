@@ -187,9 +187,7 @@ func executeWorkload(ctx context.Context, w workload.Workloader, threads int, ac
 				ch <- struct{}{}
 				return
 			case <-ticker.C:
-				if interactive {
-					w.OutputStats(false)
-				}
+				w.OutputStats(false)
 			}
 		}
 	}()
