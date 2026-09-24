@@ -2,6 +2,7 @@ package measurement
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -99,6 +100,13 @@ func (h *Histogram) Summary() []string {
 	}
 }
 
+// roundMs rounds a millisecond value to hundredths of a millisecond, discarding
+// binary64 round-trip noise (e.g. from ns -> seconds -> ms conversions) without
+// pretending to a precision the underlying histogram doesn't have.
+func roundMs(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
 func (h *Histogram) GetInfo() HistInfo {
 	h.m.RLock()
 	defer h.m.RUnlock()
@@ -106,26 +114,31 @@ func (h *Histogram) GetInfo() HistInfo {
 	if !h.frozenAt.IsZero() {
 		now = h.frozenAt
 	}
-	sum := time.Duration(h.sum).Seconds() * 1000
-	avg := time.Duration(h.Mean()).Seconds() * 1000
 	elapsed := now.Sub(h.startTime).Seconds()
 	count := h.TotalCount()
 	var ops float64
 	if elapsed > 0 {
 		ops = float64(count) / elapsed
 	}
+	// Avg is computed from the exact raw nanosecond sum rather than the
+	// histogram's bucket-median-based Mean(), so it isn't subject to bucket
+	// rounding artifacts.
+	var avg float64
+	if count > 0 {
+		avg = float64(h.sum) / float64(count) / 1e6
+	}
 	info := HistInfo{
 		Elapsed: elapsed,
-		Sum:     sum,
+		Sum:     roundMs(time.Duration(h.sum).Seconds() * 1000),
 		Count:   count,
 		Ops:     ops,
-		Avg:     avg,
-		P50:     time.Duration(h.ValueAtQuantile(50)).Seconds() * 1000,
-		P90:     time.Duration(h.ValueAtQuantile(90)).Seconds() * 1000,
-		P95:     time.Duration(h.ValueAtQuantile(95)).Seconds() * 1000,
-		P99:     time.Duration(h.ValueAtQuantile(99)).Seconds() * 1000,
-		P999:    time.Duration(h.ValueAtQuantile(99.9)).Seconds() * 1000,
-		Max:     time.Duration(h.ValueAtQuantile(100)).Seconds() * 1000,
+		Avg:     roundMs(avg),
+		P50:     roundMs(time.Duration(h.ValueAtQuantile(50)).Seconds() * 1000),
+		P90:     roundMs(time.Duration(h.ValueAtQuantile(90)).Seconds() * 1000),
+		P95:     roundMs(time.Duration(h.ValueAtQuantile(95)).Seconds() * 1000),
+		P99:     roundMs(time.Duration(h.ValueAtQuantile(99)).Seconds() * 1000),
+		P999:    roundMs(time.Duration(h.ValueAtQuantile(99.9)).Seconds() * 1000),
+		Max:     roundMs(time.Duration(h.ValueAtQuantile(100)).Seconds() * 1000),
 	}
 	return info
 }
