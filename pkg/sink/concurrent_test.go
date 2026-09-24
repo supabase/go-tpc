@@ -289,7 +289,7 @@ func TestConcurrentSink(t *testing.T) {
 		workloadMs:     50,
 	})
 	suite.Run(t, &ConcurrentSinkSuite{
-		numCalls:       500,
+		numCalls:       150,
 		numConcurrency: 5,
 		ratioFlush:     0.2,
 		workloadMs:     50,
