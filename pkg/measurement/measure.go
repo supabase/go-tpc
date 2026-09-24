@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	sigFigs           = 1
+	sigFigs           = 3
 	defaultMinLatency = 1 * time.Millisecond
-	DefaultMaxLatency = 16 * time.Second
+	DefaultMaxLatency = 5 * time.Minute
 )
 
 // column set for the --raw-samples-file CSV.
