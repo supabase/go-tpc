@@ -3,6 +3,14 @@ package tpcc
 import (
 	"context"
 	"fmt"
+	"sync"
+
+	"github.com/supabase/go-tpc/pkg/util"
+)
+
+var (
+	prepareProgressOnce sync.Once
+	prepareProgress     *util.Progress
 )
 
 type tpccLoader interface {
@@ -35,6 +43,11 @@ func prepareWorkload(ctx context.Context, w tpccLoader, threads, warehouses, thr
 	//  	* 900 rows in the NEW-ORDER table corresponding to the last 900 rows
 	//		  in the ORDER table for that district
 
+	prepareProgressOnce.Do(func() {
+		total := int64(warehouses) + int64(warehouses)*int64(districtPerWarehouse)
+		prepareProgress = util.NewProgress("Preparing", total)
+	})
+
 	if threadID == 0 {
 		// load items
 		if err := w.loadItem(ctx); err != nil {
@@ -58,6 +71,7 @@ func prepareWorkload(ctx context.Context, w tpccLoader, threads, warehouses, thr
 		if err := w.loadDistrict(ctx, warehouse); err != nil {
 			return fmt.Errorf("load district at wareshouse %d failed %v", warehouse, err)
 		}
+		prepareProgress.Add(1)
 	}
 
 	districts := warehouses * districtPerWarehouse
@@ -87,6 +101,7 @@ func prepareWorkload(ctx context.Context, w tpccLoader, threads, warehouses, thr
 		if err = w.loadOrderLine(ctx, warehouse, district, olCnts); err != nil {
 			return fmt.Errorf("load order_line at warehouse %d district %d failed %v", warehouse, district, err)
 		}
+		prepareProgress.Add(1)
 	}
 
 	return nil
