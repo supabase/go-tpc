@@ -6,8 +6,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/supabase/go-tpc/pkg/util"
 	"github.com/supabase/go-tpc/pkg/workload"
 )
+
+// txnTimeoutThrottle bounds how often the loop-continuing timeout/error lines
+// below are logged. With many workers hitting the same error condition around
+// the same moment, and each retrying immediately with no backoff, unthrottled
+// print just flood the output without providing value.
+var txnTimeoutThrottle = util.NewLogThrottle(2 * time.Second)
 
 func checkPrepare(ctx context.Context, w workload.Workloader) error {
 	// skip preparation check in csv case
@@ -153,14 +160,26 @@ func execute(timeoutCtx context.Context, w workload.Workloader, action string, t
 			// but the worker keeps going regardless of --ignore-error.
 			if runIterCtx.Err() != nil {
 				if !silence {
-					fmt.Printf("[%s] %s worker %d transaction timed out after %v, treating as failed, continuing\n",
-						time.Now().Format("2006-01-02 15:04:05"), action, index, txnTimeout)
+					if ok, suppressed := txnTimeoutThrottle.Allow(); ok {
+						msg := fmt.Sprintf("[%s] %s worker %d transaction timed out after %v, treating as failed, continuing",
+							time.Now().Format("2006-01-02 15:04:05"), action, index, txnTimeout)
+						if suppressed > 0 {
+							msg += fmt.Sprintf(" (+%d more suppressed in the last 2s)", suppressed)
+						}
+						fmt.Println(msg)
+					}
 				}
 				continue
 			}
 
 			if !silence {
-				fmt.Printf("[%s] execute %s failed, err %v\n", time.Now().Format("2006-01-02 15:04:05"), action, err)
+				if ok, suppressed := txnTimeoutThrottle.Allow(); ok {
+					msg := fmt.Sprintf("[%s] execute %s failed, err %v", time.Now().Format("2006-01-02 15:04:05"), action, err)
+					if suppressed > 0 {
+						msg += fmt.Sprintf(" (+%d more suppressed in the last 2s)", suppressed)
+					}
+					fmt.Println(msg)
+				}
 			}
 			if !ignoreError {
 				return err
