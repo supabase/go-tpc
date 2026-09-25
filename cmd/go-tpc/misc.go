@@ -11,12 +11,40 @@ import (
 	"github.com/supabase/go-tpc/pkg/workload"
 )
 
-// txnTimeoutThrottle bounds how often the loop-continuing timeout/error lines
+// timeFormat is the timestamp prefix used on workers" progress and error lines
+const timeFormat = "2006-01-02 15:04:05"
+
+// txnThrottleWindow bounds how often the loop-continuing timeout/error lines
 // below are logged. With many workers hitting the same error condition around
 // the same moment, an unthrottled print would flood the output without
 // providing value (the retries themselves back off separately, see
 // waitForBackoff).
-var txnTimeoutThrottle = util.NewLogThrottle(2 * time.Second)
+const txnThrottleWindow = 2 * time.Second
+
+var txnTimeoutThrottle = util.NewLogThrottle(txnThrottleWindow)
+
+// logEvent prints a timestamped line unless --silence is set.
+func logEvent(format string, args ...any) {
+	if silence {
+		return
+	}
+	fmt.Printf("[%s] %s\n", time.Now().Format(timeFormat), fmt.Sprintf(format, args...))
+}
+
+func logThrottledEvent(format string, args ...any) {
+	if silence {
+		return
+	}
+	ok, suppressed := txnTimeoutThrottle.Allow()
+	if !ok {
+		return
+	}
+	msg := fmt.Sprintf(format, args...)
+	if suppressed > 0 {
+		msg += fmt.Sprintf(" (+%d more suppressed in the last %v)", suppressed, txnThrottleWindow)
+	}
+	logEvent("%s", msg)
+}
 
 func checkPrepare(ctx context.Context, w workload.Workloader) error {
 	// skip preparation check in csv case
@@ -83,17 +111,20 @@ func analyzeTables(ctx context.Context, w workload.Workloader) error {
 	return a.AnalyzeTables(ctx)
 }
 
-func execute(timeoutCtx context.Context, w workload.Workloader, action string, threads, index int) error {
-	count := totalCount / threads
-
-	// For prepare, cleanup and check operations, use background context to avoid timeout constraints
-	// Only run phases should be limited by timeout
-	var ctx context.Context
-	if action == "prepare" || action == "cleanup" || action == "check" {
-		ctx = w.InitThread(context.Background(), index)
-	} else {
-		ctx = w.InitThread(timeoutCtx, index)
+// actionContext returns the parent context for a worker. Only "run" is bound
+// by the benchmark deadline; prepare, cleanup and check must be allowed to
+// finish regardless of it.
+func actionContext(timeoutCtx context.Context, action string) context.Context {
+	switch action {
+	case "prepare", "cleanup", "check":
+		return context.Background()
+	default:
+		return timeoutCtx
 	}
+}
+
+func execute(timeoutCtx context.Context, w workload.Workloader, action string, threads, index int) error {
+	ctx := w.InitThread(actionContext(timeoutCtx, action), index)
 	defer w.CleanupThread(ctx, index)
 
 	switch action {
@@ -109,16 +140,37 @@ func execute(timeoutCtx context.Context, w workload.Workloader, action string, t
 		return w.Cleanup(ctx, index)
 	case "check":
 		return w.Check(ctx, index)
+	default:
+		return runLoop(ctx, w, action, index, totalCount/threads)
 	}
+}
 
-	// This loop is only reached for "run" action since other actions return earlier
+// runTransaction executes a single transaction, bounding it by txnTimeout when
+// set. It reports whether that per-transaction timeout fired, which is distinct
+// from the benchmark deadline because runCtx is detached from it.
+func runTransaction(runCtx context.Context, w workload.Workloader, index int) (timedOut bool, err error) {
+	// Bound how long a single transaction attempt may run, independent of the
+	// benchmark deadline, so a hung statement (e.g. blocked on a lock) doesn't
+	// run forever now that runCtx is detached from the deadline.
+	ctx := runCtx
+	if txnTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(runCtx, txnTimeout)
+		defer cancel()
+	}
+	err = w.Run(ctx, index)
+	return ctx.Err() != nil, err
+}
 
-	// Transactions already in flight when the deadline hits should be allowed
-	// to finish (commit or roll back normally) rather than have the driver
-	// tear down the connection mid-statement. So the transaction itself runs
-	// on a context detached from the deadline/cancellation; only the
-	// loop-boundary check below (and the outer ctx.Err() check after Run
-	// returns) uses the real, cancelable ctx to decide whether to stop.
+// runLoop drives the "run" action: it repeats transactions until count is
+// reached (count <= 0 means unbounded) or ctx ends.
+//
+// Transactions already in flight when the deadline hits should be allowed to
+// finish (commit or roll back normally) rather than have the driver tear down
+// the connection mid-statement. So transactions run on runCtx, detached from
+// the deadline; only the loop-boundary check and the ctx.Err() check after Run
+// returns use the real, cancelable ctx to decide whether to stop.
+func runLoop(ctx context.Context, w workload.Workloader, action string, index, count int) error {
 	runCtx := context.WithoutCancel(ctx)
 
 	// consecutiveFailures drives the backoff before the next retry (see
@@ -129,76 +181,37 @@ func execute(timeoutCtx context.Context, w workload.Workloader, action string, t
 		// Check if timeout has occurred before starting next query
 		select {
 		case <-ctx.Done():
-			if !silence {
-				fmt.Printf("[%s] %s worker %d stopped due to timeout after %d iterations\n",
-					time.Now().Format("2006-01-02 15:04:05"), action, index, i)
-			}
+			logEvent("%s worker %d stopped due to timeout after %d iterations", action, index, i)
 			return nil
 		default:
 		}
 
-		// Bound how long a single transaction attempt may run, independent of
-		// the benchmark deadline, so a hung statement (e.g. blocked on a
-		// lock) doesn't run forever now that runCtx is detached from ctx.
-		runIterCtx := runCtx
-		var runCancel context.CancelFunc
-		if txnTimeout > 0 {
-			runIterCtx, runCancel = context.WithTimeout(runCtx, txnTimeout)
-		}
-		err := w.Run(runIterCtx, index)
-		if runCancel != nil {
-			runCancel()
-		}
+		timedOut, err := runTransaction(runCtx, w, index)
 		if err == nil {
 			consecutiveFailures = 0
 			continue
 		}
 
-		// Check if the error is due to timeout/cancellation
 		if ctx.Err() != nil {
-			if !silence {
-				fmt.Printf("[%s] %s worker %d stopped due to timeout: %v\n",
-					time.Now().Format("2006-01-02 15:04:05"), action, index, err)
-			}
-			return nil // Don't treat timeout as an error
-		}
-
-		// The transaction's own timeout fired (distinct from the
-		// benchmark deadline above, since runCtx/runIterCtx are detached
-		// from ctx). Treat it the same as a transient conflict or a
-		// connection error: this transaction didn't count as completed,
-		// but the worker keeps going regardless of --ignore-error.
-		if runIterCtx.Err() != nil {
-			consecutiveFailures++
-			if !silence {
-				if ok, suppressed := txnTimeoutThrottle.Allow(); ok {
-					msg := fmt.Sprintf("[%s] %s worker %d transaction timed out after %v, treating as failed, continuing",
-						time.Now().Format("2006-01-02 15:04:05"), action, index, txnTimeout)
-					if suppressed > 0 {
-						msg += fmt.Sprintf(" (+%d more suppressed in the last 2s)", suppressed)
-					}
-					fmt.Println(msg)
-				}
-			}
-			if !waitForBackoff(ctx, consecutiveFailures) {
-				return nil
-			}
-			continue
+			logEvent("%s worker %d stopped due to timeout: %v", action, index, err)
+			return nil // Don't treat the benchmark deadline as an error
 		}
 
 		consecutiveFailures++
-		if !silence {
-			if ok, suppressed := txnTimeoutThrottle.Allow(); ok {
-				msg := fmt.Sprintf("[%s] execute %s failed, err %v", time.Now().Format("2006-01-02 15:04:05"), action, err)
-				if suppressed > 0 {
-					msg += fmt.Sprintf(" (+%d more suppressed in the last 2s)", suppressed)
-				}
-				fmt.Println(msg)
+		if timedOut {
+			// The transaction's own timeout fired. Treat it the same as a
+			// transient conflict or a connection error: this transaction
+			// didn't count as completed, but the worker keeps going
+			// regardless of --ignore-error.
+			logThrottledEvent("%s worker %d transaction timed out after %v, treating as failed, continuing",
+				action, index, txnTimeout)
+		} else {
+			logThrottledEvent("execute %s failed, err %v", action, err)
+			if !ignoreError {
+				return err
 			}
 		}
-		if !ignoreError {
-			return err
-		}
+
 		if !waitForBackoff(ctx, consecutiveFailures) {
 			return nil
 		}

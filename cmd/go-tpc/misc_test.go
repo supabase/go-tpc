@@ -321,3 +321,137 @@ func TestExecuteWorkload_WorkerErrorPropagatesForAllActions(t *testing.T) {
 		})
 	}
 }
+
+// ---- refactored execute helper tests ----
+
+// withTxnTimeout sets the txnTimeout global runTransaction reads, and restores
+// it when the test finishes.
+func withTxnTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	orig := txnTimeout
+	t.Cleanup(func() { txnTimeout = orig })
+	txnTimeout = d
+}
+
+func TestActionContext(t *testing.T) {
+	cases := []struct {
+		action        string
+		wantCancelled bool
+	}{
+		{"prepare", false},
+		{"cleanup", false},
+		{"check", false},
+		{"run", true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.action, func(t *testing.T) {
+			timeoutCtx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			got := actionContext(timeoutCtx, c.action)
+			if cancelled := got.Err() != nil; cancelled != c.wantCancelled {
+				t.Errorf("actionContext(cancelled ctx, %q) cancelled = %v, want %v",
+					c.action, cancelled, c.wantCancelled)
+			}
+		})
+	}
+}
+
+// blockingRun blocks in Run until its context ends, then returns ctx.Err().
+type blockingRun struct {
+	fakeWorkloader
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (b *blockingRun) Run(ctx context.Context, _ int) error {
+	b.mu.Lock()
+	b.calls++
+	b.mu.Unlock()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (b *blockingRun) runCalls() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
+
+func TestRunTransaction_ReportsTxnTimeout(t *testing.T) {
+	withGlobals(t, 1, 1, true, true, 10*time.Second, false)
+	withTxnTimeout(t, 20*time.Millisecond)
+
+	fake := &blockingRun{fakeWorkloader: fakeWorkloader{name: "faketest"}}
+
+	timedOut, err := runTransaction(context.Background(), fake, 0)
+	if !timedOut {
+		t.Error("runTransaction() timedOut = false, want true when txnTimeout fires")
+	}
+	if err == nil {
+		t.Error("runTransaction() err = nil, want the context deadline error")
+	}
+}
+
+func TestRunTransaction_NoTimeoutPassesErrorThrough(t *testing.T) {
+	withGlobals(t, 1, 1, true, true, 10*time.Second, false)
+	withTxnTimeout(t, 0) // txnTimeout disabled
+
+	wantErr := errors.New("run boom")
+	fake := &fakeWorkloader{name: "faketest", runErr: map[int]error{0: wantErr}}
+
+	timedOut, err := runTransaction(context.Background(), fake, 0)
+	if timedOut {
+		t.Error("runTransaction() timedOut = true, want false when txnTimeout is disabled")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("runTransaction() err = %v, want %v", err, wantErr)
+	}
+}
+
+func TestRunLoop_TxnTimeoutsIgnoreIgnoreError(t *testing.T) {
+	// ignoreError=false: a per-transaction timeout must still not abort the
+	// worker, unlike a generic error.
+	withGlobals(t, 1, 2, true, false, 10*time.Second, false)
+	withTxnTimeout(t, 20*time.Millisecond)
+
+	fake := &blockingRun{fakeWorkloader: fakeWorkloader{name: "faketest"}}
+
+	if err := runLoop(context.Background(), fake, "run", 0, 2); err != nil {
+		t.Fatalf("runLoop() = %v, want nil (txn timeouts are not fatal)", err)
+	}
+	if got := fake.runCalls(); got != 2 {
+		t.Errorf("Run() called %d times, want 2 (the loop should run to completion)", got)
+	}
+}
+
+func TestRunLoop_ReturnsErrorWhenIgnoreErrorUnset(t *testing.T) {
+	withGlobals(t, 1, 5, true, false, 10*time.Second, false)
+	withTxnTimeout(t, 0)
+
+	wantErr := errors.New("run boom")
+	fake := &fakeWorkloader{name: "faketest", runErr: map[int]error{0: wantErr}}
+
+	if err := runLoop(context.Background(), fake, "run", 0, 5); !errors.Is(err, wantErr) {
+		t.Fatalf("runLoop() = %v, want %v on the first failure", err, wantErr)
+	}
+}
+
+func TestRunLoop_StopsWhenCtxAlreadyDone(t *testing.T) {
+	withGlobals(t, 1, 1, true, false, 10*time.Second, false)
+	withTxnTimeout(t, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	fake := &blockingRun{fakeWorkloader: fakeWorkloader{name: "faketest"}}
+
+	if err := runLoop(ctx, fake, "run", 0, 0); err != nil { // count=0 would otherwise loop forever
+		t.Fatalf("runLoop() = %v, want nil", err)
+	}
+	if got := fake.runCalls(); got != 0 {
+		t.Errorf("Run() called %d times, want 0 for an already-canceled context", got)
+	}
+}
