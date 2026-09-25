@@ -666,10 +666,23 @@ func (s *tpccState) closeAllStmts() {
 	s.stmtsReady = false
 }
 
+// prepareErrThrottle bounds how often a failed PrepareContext call is logged.
+// Run only sets stmtsReady after prepare succeeds (see Run), so a stalled or
+// exhausted connection pool makes every worker retry all of its statements on
+// every loop iteration with no backoff; without this, that turns into an
+// unbounded flood of identical lines across all workers.
+var prepareErrThrottle = util.NewLogThrottle(2 * time.Second)
+
 func prepareStmt(driver string, ctx context.Context, conn *sql.Conn, query string) *sql.Stmt {
 	stmt, err := conn.PrepareContext(ctx, convertToPQ(query, driver))
 	if err != nil {
-		fmt.Println(fmt.Sprintf("prepare statement error: %s", query))
+		if ok, suppressed := prepareErrThrottle.Allow(); ok {
+			msg := fmt.Sprintf("prepare statement error: %s", query)
+			if suppressed > 0 {
+				msg += fmt.Sprintf(" (+%d more suppressed in the last 2s)", suppressed)
+			}
+			fmt.Println(msg)
+		}
 		panic(err)
 	}
 	return stmt
