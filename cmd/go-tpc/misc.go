@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -12,8 +13,9 @@ import (
 
 // txnTimeoutThrottle bounds how often the loop-continuing timeout/error lines
 // below are logged. With many workers hitting the same error condition around
-// the same moment, and each retrying immediately with no backoff, unthrottled
-// print just flood the output without providing value.
+// the same moment, an unthrottled print would flood the output without
+// providing value (the retries themselves back off separately, see
+// waitForBackoff).
 var txnTimeoutThrottle = util.NewLogThrottle(2 * time.Second)
 
 func checkPrepare(ctx context.Context, w workload.Workloader) error {
@@ -119,6 +121,10 @@ func execute(timeoutCtx context.Context, w workload.Workloader, action string, t
 	// returns) uses the real, cancelable ctx to decide whether to stop.
 	runCtx := context.WithoutCancel(ctx)
 
+	// consecutiveFailures drives the backoff before the next retry (see
+	// waitForBackoff) and resets to 0 the moment a transaction succeeds again.
+	consecutiveFailures := 0
+
 	for i := 0; i < count || count <= 0; i++ {
 		// Check if timeout has occurred before starting next query
 		select {
@@ -143,51 +149,97 @@ func execute(timeoutCtx context.Context, w workload.Workloader, action string, t
 		if runCancel != nil {
 			runCancel()
 		}
-		if err != nil {
-			// Check if the error is due to timeout/cancellation
-			if ctx.Err() != nil {
-				if !silence {
-					fmt.Printf("[%s] %s worker %d stopped due to timeout: %v\n",
-						time.Now().Format("2006-01-02 15:04:05"), action, index, err)
-				}
-				return nil // Don't treat timeout as an error
-			}
+		if err == nil {
+			consecutiveFailures = 0
+			continue
+		}
 
-			// The transaction's own timeout fired (distinct from the
-			// benchmark deadline above, since runCtx/runIterCtx are detached
-			// from ctx). Treat it the same as a transient conflict or a
-			// connection error: this transaction didn't count as completed,
-			// but the worker keeps going regardless of --ignore-error.
-			if runIterCtx.Err() != nil {
-				if !silence {
-					if ok, suppressed := txnTimeoutThrottle.Allow(); ok {
-						msg := fmt.Sprintf("[%s] %s worker %d transaction timed out after %v, treating as failed, continuing",
-							time.Now().Format("2006-01-02 15:04:05"), action, index, txnTimeout)
-						if suppressed > 0 {
-							msg += fmt.Sprintf(" (+%d more suppressed in the last 2s)", suppressed)
-						}
-						fmt.Println(msg)
-					}
-				}
-				continue
+		// Check if the error is due to timeout/cancellation
+		if ctx.Err() != nil {
+			if !silence {
+				fmt.Printf("[%s] %s worker %d stopped due to timeout: %v\n",
+					time.Now().Format("2006-01-02 15:04:05"), action, index, err)
 			}
+			return nil // Don't treat timeout as an error
+		}
 
+		// The transaction's own timeout fired (distinct from the
+		// benchmark deadline above, since runCtx/runIterCtx are detached
+		// from ctx). Treat it the same as a transient conflict or a
+		// connection error: this transaction didn't count as completed,
+		// but the worker keeps going regardless of --ignore-error.
+		if runIterCtx.Err() != nil {
+			consecutiveFailures++
 			if !silence {
 				if ok, suppressed := txnTimeoutThrottle.Allow(); ok {
-					msg := fmt.Sprintf("[%s] execute %s failed, err %v", time.Now().Format("2006-01-02 15:04:05"), action, err)
+					msg := fmt.Sprintf("[%s] %s worker %d transaction timed out after %v, treating as failed, continuing",
+						time.Now().Format("2006-01-02 15:04:05"), action, index, txnTimeout)
 					if suppressed > 0 {
 						msg += fmt.Sprintf(" (+%d more suppressed in the last 2s)", suppressed)
 					}
 					fmt.Println(msg)
 				}
 			}
-			if !ignoreError {
-				return err
+			if !waitForBackoff(ctx, consecutiveFailures) {
+				return nil
 			}
+			continue
+		}
+
+		consecutiveFailures++
+		if !silence {
+			if ok, suppressed := txnTimeoutThrottle.Allow(); ok {
+				msg := fmt.Sprintf("[%s] execute %s failed, err %v", time.Now().Format("2006-01-02 15:04:05"), action, err)
+				if suppressed > 0 {
+					msg += fmt.Sprintf(" (+%d more suppressed in the last 2s)", suppressed)
+				}
+				fmt.Println(msg)
+			}
+		}
+		if !ignoreError {
+			return err
+		}
+		if !waitForBackoff(ctx, consecutiveFailures) {
+			return nil
 		}
 	}
 
 	return nil
+}
+
+const (
+	backoffBase = 100 * time.Millisecond
+	backoffMax  = 5 * time.Second
+)
+
+// backoffDelay returns a jittered exponential backoff delay for the given
+// number of consecutive failures (1-indexed), capped at backoffMax. Full
+// jitter (a uniform random delay between 0 and the capped exponential value)
+// keeps many workers recovering from a shared stall from retrying in lockstep.
+func backoffDelay(consecutiveFailures int) time.Duration {
+	shift := consecutiveFailures - 1
+	if shift > 10 { // backoffBase<<10 already exceeds backoffMax; avoids overflow
+		shift = 10
+	}
+	d := backoffBase << shift
+	if d > backoffMax {
+		d = backoffMax
+	}
+	return rand.N(d + 1)
+}
+
+// waitForBackoff sleeps for backoffDelay(consecutiveFailures) before a worker
+// retries a failed transaction, so a sustained DB stall isn't hammered by
+// every worker retrying instantly forever. It returns false if ctx ends
+// before the delay elapses, so a backing-off worker doesn't linger past the
+// benchmark deadline.
+func waitForBackoff(ctx context.Context, consecutiveFailures int) bool {
+	select {
+	case <-time.After(backoffDelay(consecutiveFailures)):
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func executeWorkload(ctx context.Context, w workload.Workloader, threads int, action string) error {

@@ -10,6 +10,92 @@ import (
 	"github.com/supabase/go-tpc/pkg/workload"
 )
 
+// ---- backoff tests ----
+
+func TestBackoffDelay_StaysWithinExpectedBound(t *testing.T) {
+	cases := []struct {
+		consecutiveFailures int
+		wantMax             time.Duration
+	}{
+		{1, backoffBase},
+		{2, 2 * backoffBase},
+		{3, 4 * backoffBase},
+		{20, backoffMax}, // large enough to exercise the overflow guard
+	}
+
+	for _, c := range cases {
+		for i := 0; i < 50; i++ { // sample the jitter range
+			d := backoffDelay(c.consecutiveFailures)
+			if d < 0 {
+				t.Fatalf("backoffDelay(%d) = %v, want >= 0", c.consecutiveFailures, d)
+			}
+			if d > c.wantMax {
+				t.Fatalf("backoffDelay(%d) = %v, want <= %v", c.consecutiveFailures, d, c.wantMax)
+			}
+		}
+	}
+}
+
+func TestWaitForBackoff_ReturnsFalsePromptlyWhenCtxDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan bool, 1)
+	go func() { done <- waitForBackoff(ctx, 20) }() // consecutiveFailures=20 would otherwise sleep up to backoffMax
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Error("waitForBackoff() = true, want false for an already-canceled context")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waitForBackoff did not return promptly for an already-canceled context")
+	}
+}
+
+func TestWaitForBackoff_TrueWhenDelayElapsesBeforeCtxDone(t *testing.T) {
+	if ok := waitForBackoff(context.Background(), 1); !ok {
+		t.Error("waitForBackoff() = false, want true when ctx never ends")
+	}
+}
+
+// countingFailThenSucceed fails its first failCount Run calls, then succeeds.
+type countingFailThenSucceed struct {
+	fakeWorkloader
+	failCount int
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *countingFailThenSucceed) Run(ctx context.Context, threadID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.calls <= f.failCount {
+		return errors.New("transient failure")
+	}
+	return nil
+}
+
+func TestExecute_BacksOffBetweenRetriesAndRecoversOnSuccess(t *testing.T) {
+	withGlobals(t, 1, 3, true, true, 10*time.Second, false) // ignoreError=true, txnTimeout unset (0) so failures take the generic-error path
+
+	fake := &countingFailThenSucceed{fakeWorkloader: fakeWorkloader{name: "faketest"}, failCount: 2}
+
+	err := execute(context.Background(), fake, "run", threads, 0)
+	if err != nil {
+		t.Fatalf("execute() = %v, want nil (ignoreError=true should let it recover)", err)
+	}
+	// 2 failures + 1 success = 3 calls, matching count = totalCount/threads = 3.
+	// This exercises the full path through waitForBackoff on both failures
+	// without hanging (backoffBase is small), and confirms consecutiveFailures
+	// resetting on success didn't skip or repeat an iteration.
+	if fake.calls != 3 {
+		t.Errorf("Run() called %d times, want 3", fake.calls)
+	}
+}
+
 // fakeWorkloader is a minimal workload.Workloader for exercising
 // checkPrepare/executeWorkload without a real database.
 type fakeWorkloader struct {
