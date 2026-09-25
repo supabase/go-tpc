@@ -7,7 +7,7 @@ import (
 
 // LogThrottle rate-limits a burst of near-duplicate log lines from many
 // concurrent goroutines hitting the same failure repeatedly (e.g. every
-// worker timing out or failing to prepare statements during a DB stall). 
+// worker timing out or failing to prepare statements during a DB stall).
 // The first call within a window is logged; further calls within the same
 // window are counted and folded into the next line once the window elapses.
 type LogThrottle struct {
