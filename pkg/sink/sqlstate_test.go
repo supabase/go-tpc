@@ -92,40 +92,6 @@ func TestIsTransactionConflict(t *testing.T) {
 	}
 }
 
-func TestIsRetryableSQLState(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{
-			name: "read-only transaction (25006) is not retryable",
-			err:  &pq.Error{Code: "25006", Message: "cannot execute INSERT in a read-only transaction"},
-			want: false,
-		},
-		{
-			name: "other class-25 invalid transaction state is not retryable",
-			err:  &pq.Error{Code: "25P02", Message: "current transaction is aborted"},
-			want: false,
-		},
-		{
-			name: "serialization failure (class 40) is retryable",
-			err:  &pq.Error{Code: "40001", Message: "could not serialize access"},
-			want: true,
-		},
-		{
-			name: "plain non-driver error keeps prior best-effort retry behavior",
-			err:  errors.New("connection reset"),
-			want: true,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, isRetryableSQLState(tc.err))
-		})
-	}
-}
-
 func TestIsConnectionError(t *testing.T) {
 	cases := []struct {
 		name string
@@ -183,4 +149,100 @@ func TestIsConnectionError(t *testing.T) {
 			require.Equal(t, tc.want, IsConnectionError(tc.err))
 		})
 	}
+}
+
+func TestIsDuplicateKey(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "postgres unique violation (23505)",
+			err:  &pq.Error{Code: "23505", Message: "duplicate key value violates unique constraint"},
+			want: true,
+		},
+		{
+			name: "wrapped postgres unique violation",
+			err:  fmt.Errorf("exec: %w", &pq.Error{Code: "23505"}),
+			want: true,
+		},
+		{
+			name: "postgres foreign key violation (23503)",
+			err:  &pq.Error{Code: "23503", Message: "violates foreign key constraint"},
+			want: false,
+		},
+		{
+			name: "mysql duplicate entry (1062)",
+			err:  &mysql.MySQLError{Number: 1062, SQLState: [5]byte{'2', '3', '0', '0', '0'}, Message: "Duplicate entry '5' for key 'PRIMARY'"},
+			want: true,
+		},
+		{
+			name: "other mysql integrity violation with SQLSTATE 23000",
+			err:  &mysql.MySQLError{Number: 1452, SQLState: [5]byte{'2', '3', '0', '0', '0'}, Message: "Cannot add or update a child row"},
+			want: false,
+		},
+		{
+			name: "plain error",
+			err:  errors.New("connection reset"),
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, isDuplicateKey(tc.err))
+		})
+	}
+}
+
+func TestClassifyFailure(t *testing.T) {
+	mysqlErr := func(number uint16, state string) error {
+		e := &mysql.MySQLError{Number: number}
+		copy(e.SQLState[:], state)
+		return e
+	}
+	cases := []struct {
+		err  error
+		want failureClass
+	}{
+		{errors.New("connection reset"), retryOutcomeUnknown},
+		{driver.ErrBadConn, retryOutcomeUnknown},
+		{&net.OpError{Op: "read", Err: errors.New("connection reset by peer")}, retryOutcomeUnknown},
+		{mysql.ErrInvalidConn, retryOutcomeUnknown},
+		{&pq.Error{Code: "08006"}, retryOutcomeUnknown},
+		{&pq.Error{Code: "08007"}, retryOutcomeUnknown},
+		{&pq.Error{Code: "57P01"}, retryOutcomeUnknown},
+		{&pq.Error{Code: "57014"}, retryOutcomeUnknown},
+		{&pq.Error{Code: "40003"}, retryOutcomeUnknown},
+		{fmt.Errorf("wrapped: %w", &pq.Error{Code: "08003"}), retryOutcomeUnknown},
+		{&pq.Error{Code: "40001"}, retryRolledBack},
+		{&pq.Error{Code: "40P01"}, retryRolledBack},
+		{&pq.Error{Code: "55P03"}, retryRolledBack},
+		{&pq.Error{Code: "53300"}, retryRolledBack},
+		{&pq.Error{Code: "57P03"}, retryRolledBack},
+		{&pq.Error{Code: "08001"}, retryRolledBack},
+		{&pq.Error{Code: "25006"}, failFatal},
+		{&pq.Error{Code: "23505"}, failFatal},
+		{&pq.Error{Code: "23503"}, failFatal},
+		{&pq.Error{Code: "42601"}, failFatal},
+		{&pq.Error{Code: "53100"}, failFatal},
+		{&pq.Error{Code: "58030"}, failFatal},
+		{&pq.Error{Code: "XX000"}, failFatal},
+		{&pq.Error{Code: "08P01"}, failFatal},
+		{&pq.Error{Code: "57P04"}, failFatal},
+		{mysqlErr(1205, "HY000"), retryOutcomeUnknown},
+		{mysqlErr(1213, "40001"), retryOutcomeUnknown},
+		{mysqlErr(1792, "25006"), failFatal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.err.Error(), func(t *testing.T) {
+			require.Equal(t, tc.want, classifyFailure(tc.err))
+		})
+	}
+}
+
+func TestTableName(t *testing.T) {
+	require.Equal(t, "stock", tableName("INSERT INTO stock (s_i_id) VALUES"))
+	require.Equal(t, "t", tableName("insert into t(a) values"))
+	require.Equal(t, "", tableName("VALUES"))
 }
