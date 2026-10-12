@@ -112,7 +112,11 @@ func classifyFailure(err error) failureClass {
 		"57P03", // cannot_connect_now
 		"57P05", // idle_session_timeout
 		"08001", // sqlclient_unable_to_establish_sqlconnection
-		"08004": // sqlserver_rejected_establishment_of_sqlconnection
+		"08004", // sqlserver_rejected_establishment_of_sqlconnection
+		"MTB01", // Multigres: failover buffer full, request evicted before execution
+		"MTB02", // Multigres: failover buffer timeout, request evicted before execution
+		"MTB03", // Multigres: failover buffer shutting down, request evicted before execution
+		"MTF01": // Multigres: planned failover in progress, rejected before execution
 		return retryRolledBack
 	}
 	return failFatal
