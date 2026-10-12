@@ -201,6 +201,8 @@ func TestInterval_WindowsAreContiguous(t *testing.T) {
 	render := captureRender(&tick)
 
 	m.Measure("new_order", time.Millisecond, nil)
+	// The first flush happens inside Output, between beforeFlush1 and t1.
+	beforeFlush1 := time.Now()
 	m.Output(false, util.OutputStylePlain, render)
 	t1 := time.Now()
 	first := tick["new_order"].GetInfo().Elapsed
@@ -217,8 +219,9 @@ func TestInterval_WindowsAreContiguous(t *testing.T) {
 	if second < gap.Seconds() {
 		t.Errorf("second window = %vs, want at least the %vs gap between flushes", second, gap.Seconds())
 	}
-	if second > t2.Sub(t1).Seconds() {
-		t.Errorf("second window %vs exceeds the wall time between flushes (%vs)", second, t2.Sub(t1).Seconds())
+	// The second window starts at the first flush, which may precede t1.
+	if second > t2.Sub(beforeFlush1).Seconds() {
+		t.Errorf("second window %vs exceeds the wall time between flushes (%vs)", second, t2.Sub(beforeFlush1).Seconds())
 	}
 	// Contiguous, not overlapping: the two windows together cover no more than
 	// the whole run.

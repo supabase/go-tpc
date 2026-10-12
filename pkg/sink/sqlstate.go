@@ -37,17 +37,85 @@ func IsTransactionConflict(err error) bool {
 	return len(state) == 5 && state[:2] == "40"
 }
 
-// isRetryableSQLState reports whether err's SQLSTATE class indicates a
-// transient condition worth retrying.
+// isDuplicateKey reports whether err is a unique-key violation: Postgres
+// SQLSTATE 23505 or MySQL error 1062. MySQL is matched by error number because
+// its SQLSTATE 23000 also covers other integrity violations.
+func isDuplicateKey(err error) bool {
+	var myErr *mysql.MySQLError
+	if errors.As(err, &myErr) {
+		return myErr.Number == 1062
+	}
+	return SQLState(err) == "23505"
+}
+
+// failureClass says how Flush handles a failed batch INSERT.
+type failureClass int
+
+const (
+	// failFatal: retrying cannot help, so give up at once.
+	failFatal failureClass = iota
+	// retryRolledBack: a transient failure where the server did not commit.
+	retryRolledBack
+	// retryOutcomeUnknown: a transient failure where the server may have
+	// committed the batch before the client saw the error.
+	retryOutcomeUnknown
+)
+
+func (c failureClass) String() string {
+	switch c {
+	case retryRolledBack:
+		return "retry, rolled back"
+	case retryOutcomeUnknown:
+		return "retry, outcome unknown"
+	}
+	return "fatal"
+}
+
+// classifyFailure decides whether a failed batch INSERT is worth retrying and
+// whether it may have committed. Only SQLSTATEs known to be transient are
+// retried. Everything else, such as data errors (22), integrity violations
+// (23), invalid transaction state (25), syntax errors (42), disk full (53100),
+// system errors (58) and internal errors (XX), fails at once.
 //
-// At the moment only SQLSTATE class 25, "Invalid Transaction State"
-// is considered non-retryable but the list may expand over time.
-//
-// An unknown/non-driver error (empty state) is treated as retryable, keeping
-// the prior best-effort retry behavior.
-func isRetryableSQLState(err error) bool {
-	state := SQLState(err)
-	return !(len(state) == 5 && state[:2] == "25")
+// MySQL SQLSTATEs are too coarse to tell transient from permanent errors
+// (HY000 covers both), so MySQL server errors are retried as before, except
+// for class 25. They count as outcome unknown, which keeps the old rule that
+// a duplicate entry on a retry means an earlier attempt committed.
+func classifyFailure(err error) failureClass {
+	var myErr *mysql.MySQLError
+	if errors.As(err, &myErr) {
+		if string(myErr.SQLState[:2]) == "25" {
+			return failFatal
+		}
+		return retryOutcomeUnknown
+	}
+
+	switch SQLState(err) {
+	case "":
+		// No server error: a network, driver or timeout error. The server
+		// may have committed before the connection broke.
+		return retryOutcomeUnknown
+	case "08000", // connection_exception
+		"08003", // connection_does_not_exist
+		"08006", // connection_failure, also sent by Multigres for an unavailable backend
+		"08007", // transaction_resolution_unknown
+		"57P01", // admin_shutdown, can end a session after a local commit
+		"57P02", // crash_shutdown
+		"57014", // query_canceled, sent by proxies such as Multigres for their own timeouts
+		"40003": // statement_completion_unknown
+		return retryOutcomeUnknown
+	case "40001", // serialization_failure
+		"40P01", // deadlock_detected
+		"55P03", // lock_not_available
+		"53200", // out_of_memory
+		"53300", // too_many_connections
+		"57P03", // cannot_connect_now
+		"57P05", // idle_session_timeout
+		"08001", // sqlclient_unable_to_establish_sqlconnection
+		"08004": // sqlserver_rejected_establishment_of_sqlconnection
+		return retryRolledBack
+	}
+	return failFatal
 }
 
 // IsConnectionError reports whether err indicates the underlying database

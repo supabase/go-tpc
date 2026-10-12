@@ -3,9 +3,18 @@ package tpch
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/supabase/go-tpc/pkg/sink"
 	"github.com/supabase/go-tpc/tpch/dbgen"
+)
+
+// The sink runs each attempt on its own connection, so a pooled connection
+// that the server already closed shows up as a failed attempt. A few retries
+// let the load ride over that.
+const (
+	prepareRetryCount    = 3
+	prepareRetryInterval = time.Second
 )
 
 type sqlLoader struct {
@@ -176,55 +185,55 @@ func NewOrderLoader(ctx context.Context, db *sql.DB, concurrency int) *orderLoad
 	return &orderLoader{sqlLoader{
 		sink.NewConcurrentSink(func(idx int) sink.Sink {
 			return sink.NewSQLSink(db,
-				`INSERT INTO orders (O_ORDERKEY, O_CUSTKEY, O_ORDERSTATUS, O_TOTALPRICE, O_ORDERDATE, O_ORDERPRIORITY, O_CLERK, O_SHIPPRIORITY, O_COMMENT) VALUES `, 0, 0)
+				`INSERT INTO orders (O_ORDERKEY, O_CUSTKEY, O_ORDERSTATUS, O_TOTALPRICE, O_ORDERDATE, O_ORDERPRIORITY, O_CLERK, O_SHIPPRIORITY, O_COMMENT) VALUES `, prepareRetryCount, prepareRetryInterval)
 		}, concurrency), ctx}}
 }
 func NewLineItemLoader(ctx context.Context, db *sql.DB, concurrency int) *lineItemloader {
 	return &lineItemloader{sqlLoader{
 		sink.NewConcurrentSink(func(idx int) sink.Sink {
 			return sink.NewSQLSink(db,
-				`INSERT INTO lineitem (L_ORDERKEY, L_PARTKEY, L_SUPPKEY, L_LINENUMBER, L_QUANTITY, L_EXTENDEDPRICE, L_DISCOUNT, L_TAX, L_RETURNFLAG, L_LINESTATUS, L_SHIPDATE, L_COMMITDATE, L_RECEIPTDATE, L_SHIPINSTRUCT, L_SHIPMODE, L_COMMENT) VALUES `, 0, 0)
+				`INSERT INTO lineitem (L_ORDERKEY, L_PARTKEY, L_SUPPKEY, L_LINENUMBER, L_QUANTITY, L_EXTENDEDPRICE, L_DISCOUNT, L_TAX, L_RETURNFLAG, L_LINESTATUS, L_SHIPDATE, L_COMMITDATE, L_RECEIPTDATE, L_SHIPINSTRUCT, L_SHIPMODE, L_COMMENT) VALUES `, prepareRetryCount, prepareRetryInterval)
 		}, concurrency), ctx}}
 }
 func NewCustLoader(ctx context.Context, db *sql.DB, concurrency int) *custLoader {
 	return &custLoader{sqlLoader{
 		sink.NewConcurrentSink(func(idx int) sink.Sink {
 			return sink.NewSQLSink(db,
-				`INSERT INTO customer (C_CUSTKEY, C_NAME, C_ADDRESS, C_NATIONKEY, C_PHONE, C_ACCTBAL, C_MKTSEGMENT, C_COMMENT) VALUES `, 0, 0)
+				`INSERT INTO customer (C_CUSTKEY, C_NAME, C_ADDRESS, C_NATIONKEY, C_PHONE, C_ACCTBAL, C_MKTSEGMENT, C_COMMENT) VALUES `, prepareRetryCount, prepareRetryInterval)
 		}, concurrency), ctx}}
 }
 func NewPartLoader(ctx context.Context, db *sql.DB, concurrency int) *partLoader {
 	return &partLoader{sqlLoader{
 		sink.NewConcurrentSink(func(idx int) sink.Sink {
 			return sink.NewSQLSink(db,
-				`INSERT INTO part (P_PARTKEY, P_NAME, P_MFGR, P_BRAND, P_TYPE, P_SIZE, P_CONTAINER, P_RETAILPRICE, P_COMMENT) VALUES `, 0, 0)
+				`INSERT INTO part (P_PARTKEY, P_NAME, P_MFGR, P_BRAND, P_TYPE, P_SIZE, P_CONTAINER, P_RETAILPRICE, P_COMMENT) VALUES `, prepareRetryCount, prepareRetryInterval)
 		}, concurrency), ctx}}
 }
 func NewPartSuppLoader(ctx context.Context, db *sql.DB, concurrency int) *partSuppLoader {
 	return &partSuppLoader{sqlLoader{
 		sink.NewConcurrentSink(func(idx int) sink.Sink {
 			return sink.NewSQLSink(db,
-				`INSERT INTO partsupp (PS_PARTKEY, PS_SUPPKEY, PS_AVAILQTY, PS_SUPPLYCOST, PS_COMMENT) VALUES `, 0, 0)
+				`INSERT INTO partsupp (PS_PARTKEY, PS_SUPPKEY, PS_AVAILQTY, PS_SUPPLYCOST, PS_COMMENT) VALUES `, prepareRetryCount, prepareRetryInterval)
 		}, concurrency), ctx}}
 }
 func NewSuppLoader(ctx context.Context, db *sql.DB, concurrency int) *suppLoader {
 	return &suppLoader{sqlLoader{
 		sink.NewConcurrentSink(func(idx int) sink.Sink {
 			return sink.NewSQLSink(db,
-				`INSERT INTO supplier (S_SUPPKEY, S_NAME, S_ADDRESS, S_NATIONKEY, S_PHONE, S_ACCTBAL, S_COMMENT) VALUES `, 0, 0)
+				`INSERT INTO supplier (S_SUPPKEY, S_NAME, S_ADDRESS, S_NATIONKEY, S_PHONE, S_ACCTBAL, S_COMMENT) VALUES `, prepareRetryCount, prepareRetryInterval)
 		}, concurrency), ctx}}
 }
 func NewNationLoader(ctx context.Context, db *sql.DB, concurrency int) *nationLoader {
 	return &nationLoader{sqlLoader{
 		sink.NewConcurrentSink(func(idx int) sink.Sink {
 			return sink.NewSQLSink(db,
-				`INSERT INTO nation (N_NATIONKEY, N_NAME, N_REGIONKEY, N_COMMENT) VALUES `, 0, 0)
+				`INSERT INTO nation (N_NATIONKEY, N_NAME, N_REGIONKEY, N_COMMENT) VALUES `, prepareRetryCount, prepareRetryInterval)
 		}, concurrency), ctx}}
 }
 func NewRegionLoader(ctx context.Context, db *sql.DB, concurrency int) *regionLoader {
 	return &regionLoader{sqlLoader{
 		sink.NewConcurrentSink(func(idx int) sink.Sink {
 			return sink.NewSQLSink(db,
-				`INSERT INTO region (R_REGIONKEY, R_NAME, R_COMMENT) VALUES `, 0, 0)
+				`INSERT INTO region (R_REGIONKEY, R_NAME, R_COMMENT) VALUES `, prepareRetryCount, prepareRetryInterval)
 		}, concurrency), ctx}}
 }
