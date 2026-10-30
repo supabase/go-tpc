@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/supabase/go-tpc/pkg/connadmit"
 	"github.com/supabase/go-tpc/pkg/util"
 
 	// mysql package
@@ -87,7 +88,9 @@ func makeTargets(hosts []string, ports []int) []string {
 	return targets
 }
 
-func newDB(targets []string, driver string, user string, password string, dbName string, connParams string) (*sql.DB, error) {
+// newDB opens a pool over targets. A non-nil admit gates every new physical
+// connection behind its predicate, for one target or several.
+func newDB(targets []string, driver string, user string, password string, dbName string, connParams string, admit *connadmit.Admitter) (*sql.DB, error) {
 	if len(targets) == 0 {
 		panic(fmt.Errorf("empty targets"))
 	}
@@ -142,6 +145,16 @@ func newDB(targets []string, driver string, user string, password string, dbName
 		}
 	}
 
+	if admit != nil {
+		var (
+			inner sqldrv.Driver = drv
+			name                = names[0]
+		)
+		if len(names) > 1 {
+			inner, name = &MuxDriver{instances: names, internal: drv}, ""
+		}
+		return sql.OpenDB(admit.Connector(inner, name)), nil
+	}
 	if len(names) == 1 {
 		return sql.Open(driver, names[0])
 	}
@@ -207,13 +220,14 @@ func openDB() {
 		tmpDB *sql.DB
 		err   error
 	)
-	globalDB, err = newDB(targets, driver, user, password, dbName, connParams)
+	// ConnAdmission is only set by tpcc run --conn-admit-sql.
+	globalDB, err = newDB(targets, driver, user, password, dbName, connParams, tpccConfig.ConnAdmission)
 	if err != nil {
 		panic(err)
 	}
 	if err := globalDB.Ping(); err != nil {
 		if isDBNotExist(err) {
-			tmpDB, _ = newDB(targets, driver, user, password, "", connParams)
+			tmpDB, _ = newDB(targets, driver, user, password, "", connParams, nil)
 			defer tmpDB.Close()
 			if _, err := tmpDB.Exec(createDBDDL + dbName); err != nil {
 				panic(fmt.Errorf("failed to create database, err %v", err))

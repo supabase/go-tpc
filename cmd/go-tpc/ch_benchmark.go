@@ -83,7 +83,7 @@ func registerCHBenchmark(root *cobra.Command) {
 		},
 		Run: func(cmd *cobra.Command, _ []string) {
 			executeCH("run", func() (*sql.DB, error) {
-				return newDB(makeTargets(apHosts, apPorts), driver, user, password, dbName, apConnParams)
+				return newDB(makeTargets(apHosts, apPorts), driver, user, password, dbName, apConnParams, nil)
 			})
 		},
 	}

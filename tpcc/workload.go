@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/supabase/go-tpc/pkg/connadmit"
 	"github.com/supabase/go-tpc/pkg/measurement"
 	"github.com/supabase/go-tpc/pkg/sink"
 	"github.com/supabase/go-tpc/pkg/util"
@@ -119,6 +120,10 @@ type Config struct {
 
 	// automatic connection refresh interval to balance traffic across new replicas
 	ConnRefreshInterval time.Duration
+
+	// ConnAdmission, when set by --conn-admit-sql, gates every new physical
+	// connection; its record goes into the --summary-file document.
+	ConnAdmission *connadmit.Admitter
 
 	// StoredProcs enables PL/pgSQL stored-procedure mode (postgres driver only).
 	// Each of the five TPC-C transactions is then dispatched as a single
@@ -485,12 +490,14 @@ func outputWaitTimesMeasurement(outputStyle string, prefix string, opMeasurement
 // tpccSummaryDoc is the --summary-file document: the generic per-transaction
 // figures measurement.Measurement.Summary already computes, plus the three
 // tpcc-specific figures ([Summary]'s tpm/tpmTotal/efficiency line) that
-// need Warehouses and aren't generic enough to live in pkg/measurement.
+// need Warehouses and aren't generic enough to live in pkg/measurement,
+// plus the connection admission record when --conn-admit-sql is set.
 type tpccSummaryDoc struct {
 	Transactions  []measurement.OpSummary `json:"transactions"`
 	Tpm           *float64                `json:"tpm,omitempty"`
 	TpmTotal      *float64                `json:"tpm_total,omitempty"`
 	EfficiencyPct *float64                `json:"efficiency_pct,omitempty"`
+	ConnAdmission *connadmit.Stats        `json:"conn_admission,omitempty"`
 }
 
 func writeSummaryFile(path string, doc tpccSummaryDoc) error {
@@ -532,7 +539,10 @@ func (w *Workloader) OutputStats(ifSummaryReport bool) {
 				totalOps += hist.GetInfo().Ops
 			}
 		}
-		doc := tpccSummaryDoc{Transactions: w.rtMeasurement.Summary()}
+		doc := tpccSummaryDoc{
+			Transactions:  w.rtMeasurement.Summary(),
+			ConnAdmission: w.cfg.ConnAdmission.Stats(),
+		}
 		if newOrderHist != nil && !newOrderHist.Empty() {
 			result := newOrderHist.GetInfo()
 			const specWarehouseFactor = 12.86
