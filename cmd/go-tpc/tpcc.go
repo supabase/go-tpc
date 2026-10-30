@@ -11,13 +11,18 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
+	"github.com/supabase/go-tpc/pkg/connadmit"
 	"github.com/supabase/go-tpc/pkg/measurement"
 	"github.com/supabase/go-tpc/pkg/util"
 	"github.com/supabase/go-tpc/pkg/workload"
 	"github.com/supabase/go-tpc/tpcc"
 )
 
-var tpccConfig tpcc.Config
+var (
+	tpccConfig       tpcc.Config
+	connAdmitSQL     string
+	connAdmitRetries int
+)
 
 func executeTpcc(action string) error {
 	if pprofAddr != "" {
@@ -42,6 +47,13 @@ func executeTpcc(action string) error {
 	}
 	if maxProcs != 0 {
 		runtime.GOMAXPROCS(maxProcs)
+	}
+
+	if connAdmitSQL != "" {
+		if connAdmitRetries < 1 {
+			return fmt.Errorf("--conn-admit-retries must be at least 1, got %d", connAdmitRetries)
+		}
+		tpccConfig.ConnAdmission = &connadmit.Admitter{SQL: connAdmitSQL, MaxRejections: connAdmitRetries}
 	}
 
 	openDB()
@@ -156,6 +168,9 @@ func registerTpcc(root *cobra.Command) {
 	cmdRun.PersistentFlags().BoolVar(&tpccConfig.StoredProcs, "stored-procs", false, "Use PL/pgSQL stored procedures for the 5 TPC-C transactions (postgres driver only)")
 	cmdRun.PersistentFlags().StringVar(&tpccConfig.RawSamplesFile, "raw-samples-file", "", "Write samples to the provided CSV file path.")
 	cmdRun.PersistentFlags().StringVar(&tpccConfig.SummaryFile, "summary-file", "", "Write the end-of-run summary to the provided JSON file path.")
+	cmdRun.Flags().StringVar(&connAdmitSQL, "conn-admit-sql", "", "SQL run on every new physical connection before use. It must return one row: a boolean "+
+		"(true keeps the connection, false closes it and opens another) and an optional text label recorded in --summary-file")
+	cmdRun.Flags().IntVar(&connAdmitRetries, "conn-admit-retries", 50, "Rejected attempts per connection after which --conn-admit-sql fails the run")
 
 	var cmdCleanup = &cobra.Command{
 		Use:   "cleanup",

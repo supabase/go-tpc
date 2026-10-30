@@ -141,6 +141,37 @@ go-tpc tpcc --warehouses 4 prepare -T 100 --output-type csv --output-dir data --
 go-tpc tpcc --warehouses 4 prepare --output-type csv --output-dir data --pprof :10111
 ```
 
+##### Connection admission predicate
+
+`tpcc run --conn-admit-sql <query>` runs a query on every new physical connection
+before the workload may use it, so you can control which server, or which side of
+a load balancer, the threads end up on. The query must return exactly one row. Its
+first column must be a boolean: `true` keeps the connection, `false` closes it and
+opens another. An optional second column, read as text, labels the connection.
+Any other result, such as no rows, several rows, several statements, a non-boolean
+first column or a query error, fails the run. MySQL returns booleans as integers, so in practice the
+predicate needs PostgreSQL.
+
+`--conn-admit-retries <n>` (default 50) is how many rejected attempts a single
+connection may take. Exhausting it fails the run, naming the predicate, the attempt
+count and the last label. go-tpc never falls back to accepting a connection.
+
+The predicate covers every new connection: the initial ones, those opened by
+`--conn-refresh-interval`, and those that replace a connection lost to an error.
+With `--summary-file`, the JSON document gets a `conn_admission` key with the
+predicate, the number of accepted connections, the total rejections, and each
+accepted connection's label and rejection count. The key is absent without the flag.
+
+```bash
+# Only use connections served by a backend with an even PID
+go-tpc tpcc run -d postgres -H 127.0.0.1 -P 5432 -U postgres -D test --warehouses 1 \
+  --conn-admit-sql "SELECT pg_backend_pid() % 2 = 0, pg_backend_pid()::text" \
+  --summary-file summary.json
+```
+
+The Multigres nightly benchmark uses this flag to run TPC-C only through gateways
+in, or only through gateways outside, the primary's availability zone.
+
 ### TPC-H
 
 #### Prepare

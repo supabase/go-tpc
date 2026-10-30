@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	"github.com/supabase/go-tpc/pkg/connadmit"
 	"github.com/supabase/go-tpc/pkg/measurement"
 )
 
@@ -48,5 +50,58 @@ func TestWriteSummaryFile_WritesStructuredJSON(t *testing.T) {
 	}
 	if got.Transactions[1].Status != "error" {
 		t.Errorf("transactions[1].Status = %q, want %q", got.Transactions[1].Status, "error")
+	}
+}
+
+func TestWriteSummaryFile_ConnAdmission(t *testing.T) {
+	stats := &connadmit.Stats{
+		SQL:        "SELECT pg_backend_pid() % 2 = 0, pg_backend_pid()::text",
+		Accepted:   2,
+		Rejections: 3,
+		Connections: []connadmit.Connection{
+			{Label: "4242", Rejections: 0},
+			{Label: "4250", Rejections: 3},
+		},
+	}
+	cases := []struct {
+		name  string
+		stats *connadmit.Stats
+	}{
+		{"flag set", stats},
+		// OutputStats fills the key from a nil Admitter when the flag is unset.
+		{"flag unset", (*connadmit.Admitter)(nil).Stats()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "summary.json")
+			if err := writeSummaryFile(path, tpccSummaryDoc{ConnAdmission: tc.stats}); err != nil {
+				t.Fatalf("writeSummaryFile: %v", err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("unmarshal written summary: %v\n%s", err, data)
+			}
+			blob, present := raw["conn_admission"]
+			if tc.stats == nil {
+				if present {
+					t.Fatalf("conn_admission present without the flag:\n%s", data)
+				}
+				return
+			}
+			if !present {
+				t.Fatalf("conn_admission missing:\n%s", data)
+			}
+			var got connadmit.Stats
+			if err := json.Unmarshal(blob, &got); err != nil {
+				t.Fatalf("unmarshal conn_admission: %v", err)
+			}
+			if !reflect.DeepEqual(&got, tc.stats) {
+				t.Errorf("conn_admission = %+v, want %+v", got, *tc.stats)
+			}
+		})
 	}
 }
