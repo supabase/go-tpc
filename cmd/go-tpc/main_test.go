@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/lib/pq"
 	"github.com/supabase/go-tpc/pkg/connadmit"
+	"github.com/supabase/go-tpc/pkg/pqdial"
 )
 
 func TestApplyDirectSSLWorkaround_PassthroughWithoutDirectNegotiation(t *testing.T) {
@@ -53,7 +53,7 @@ func TestNewDB_ConnAdmitWrapsOnlyWhenSet(t *testing.T) {
 		admit   *connadmit.Admitter
 		want    sqldrv.Driver
 	}{
-		{"one target, no flag", []string{"127.0.0.1:5432"}, nil, &pq.Driver{}},
+		{"one target, no flag", []string{"127.0.0.1:5432"}, nil, pqdial.Driver{}},
 		{"two targets, no flag", []string{"127.0.0.1:5432", "127.0.0.1:5433"}, nil, &MuxDriver{}},
 		{"one target, flag set", []string{"127.0.0.1:5432"}, admit, &connadmit.Connector{}},
 		{"two targets, flag set", []string{"127.0.0.1:5432", "127.0.0.1:5433"}, admit, &connadmit.Connector{}},

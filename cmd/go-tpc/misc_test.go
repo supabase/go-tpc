@@ -455,3 +455,25 @@ func TestRunLoop_StopsWhenCtxAlreadyDone(t *testing.T) {
 		t.Errorf("Run() called %d times, want 0 for an already-canceled context", got)
 	}
 }
+
+// ---- remoteSuffix tests ----
+
+type remoteWorkloader struct {
+	workload.Workloader
+	remote string
+}
+
+func (w remoteWorkloader) ThreadRemote(context.Context) string { return w.remote }
+
+func TestRemoteSuffix(t *testing.T) {
+	ctx := context.Background()
+	if got := remoteSuffix(ctx, nil); got != "" {
+		t.Errorf("workload without ThreadRemote: %q, want empty", got)
+	}
+	if got := remoteSuffix(ctx, remoteWorkloader{}); got != "" {
+		t.Errorf("unknown remote: %q, want empty", got)
+	}
+	if got := remoteSuffix(ctx, remoteWorkloader{remote: "10.0.0.1:5432"}); got != " via 10.0.0.1:5432" {
+		t.Errorf("remote = %q, want \" via 10.0.0.1:5432\"", got)
+	}
+}
