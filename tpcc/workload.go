@@ -274,6 +274,12 @@ func getTPCCState(ctx context.Context) *tpccState {
 	return s
 }
 
+// ThreadRemote reports the address the thread's connection was dialed to,
+// current as of the last connection refresh; see workload.TpcState.Remote.
+func (w *Workloader) ThreadRemote(ctx context.Context) string {
+	return getTPCCState(ctx).Remote
+}
+
 // Run implements Workloader interface
 func (w *Workloader) Run(ctx context.Context, threadID int) (err error) {
 	defer func() {
