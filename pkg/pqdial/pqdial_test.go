@@ -2,6 +2,7 @@ package pqdial
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/binary"
 	"io"
 	"net"
@@ -13,7 +14,9 @@ import (
 
 // servePostgres accepts connections and answers each startup message with
 // AuthenticationOk and ReadyForQuery: enough for lib/pq to hand back an open
-// connection. Every subsequent byte is discarded.
+// connection. After that it answers simple queries the way a server does for
+// BEGIN and COMMIT, which is all a transaction with no statements sends, and
+// hangs up on any other message (lib/pq's Terminate on Close among them).
 func servePostgres(t *testing.T) net.Addr {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -38,37 +41,87 @@ func servePostgres(t *testing.T) net.Addr {
 				}
 				// 'R' AuthenticationOk, then 'Z' ReadyForQuery (idle).
 				c.Write([]byte{'R', 0, 0, 0, 8, 0, 0, 0, 0, 'Z', 0, 0, 0, 5, 'I'})
-				io.Copy(io.Discard, c)
+				for {
+					var header [5]byte // message type, then length
+					if _, err := io.ReadFull(c, header[:]); err != nil || header[0] != 'Q' {
+						return
+					}
+					query := make([]byte, binary.BigEndian.Uint32(header[1:])-4)
+					if _, err := io.ReadFull(c, query); err != nil {
+						return
+					}
+					// 'C' CommandComplete with the command tag, then 'Z'
+					// ReadyForQuery: in a transaction after BEGIN, idle after
+					// COMMIT.
+					tag, status := "COMMIT", byte('I')
+					if strings.HasPrefix(string(query), "BEGIN") {
+						tag, status = "BEGIN", 'T'
+					}
+					reply := append([]byte{'C', 0, 0, 0, byte(4 + len(tag) + 1)}, tag...)
+					c.Write(append(reply, 0, 'Z', 0, 0, 0, 5, status))
+				}
 			}()
 		}
 	}()
 	return ln.Addr()
 }
 
-func TestOpen_RecordsRemoteAndForgetsCollectedConn(t *testing.T) {
-	addr := servePostgres(t)
-	before := entries()
-	// Open, check and close in a helper so no reference to the connection
-	// survives on this frame when the GC runs.
-	func() {
-		conn, err := Driver{}.Open("postgres://u@" + addr.String() + "/d?sslmode=disable")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := Remote(conn); got != addr.String() {
-			t.Errorf("Remote = %q, want %q", got, addr)
-		}
-		if got := entries(); got != before+1 {
-			t.Errorf("remotes has %d entries after Open, want %d", got, before+1)
-		}
-		conn.Close()
-	}()
-	for i := 0; i < 20 && entries() != before; i++ {
-		runtime.GC()
-		time.Sleep(10 * time.Millisecond)
+// beginCommit runs one empty transaction on conn under a cancelable context,
+// as every go-tpc transaction with --txn-timeout set is. lib/pq then leaves
+// the transaction's cancel watcher on the conn, a closure that points back at
+// the conn: a reference cycle, which Go never collects through a finalizer.
+func beginCommit(t *testing.T, conn driver.Conn) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tx, err := conn.(driver.ConnBeginTx).BeginTx(ctx, driver.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := entries(); got != before {
-		t.Errorf("remotes has %d entries after the connection was collected, want %d", got, before)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpen_RecordsRemoteAndForgetsCollectedConn(t *testing.T) {
+	cases := []struct {
+		name string
+		use  func(*testing.T, driver.Conn)
+	}{
+		{"connection never used", func(*testing.T, driver.Conn) {}},
+		{"connection that ran a transaction under a cancelable context", beginCommit},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			addr := servePostgres(t)
+			before := entries()
+			// Open, use and close in a helper so no reference to the
+			// connection survives on this frame when the GC runs.
+			func() {
+				conn, err := Driver{}.Open("postgres://u@" + addr.String() + "/d?sslmode=disable")
+				if err != nil {
+					t.Fatal(err)
+				}
+				tc.use(t, conn)
+				// A collection while the connection is still in use must
+				// leave its entry alone.
+				runtime.GC()
+				if got := Remote(conn); got != addr.String() {
+					t.Errorf("Remote = %q, want %q", got, addr)
+				}
+				if got := entries(); got != before+1 {
+					t.Errorf("remotes has %d entries after Open, want %d", got, before+1)
+				}
+				conn.Close()
+			}()
+			for i := 0; i < 20 && entries() != before; i++ {
+				runtime.GC()
+				time.Sleep(10 * time.Millisecond)
+			}
+			if got := entries(); got != before {
+				t.Errorf("remotes has %d entries after the connection was collected, want %d", got, before)
+			}
+		})
 	}
 }
 
@@ -124,9 +177,25 @@ func TestOpen_FailedHandshakeLeavesNoEntry(t *testing.T) {
 	}
 }
 
+// foreignConn is a connection of some other driver.
+type foreignConn struct{ driver.Conn }
+
+var staticConn foreignConn
+
 func TestRemote_UnknownConnection(t *testing.T) {
-	if got := Remote(nil); got != "" {
-		t.Errorf("Remote(nil) = %q, want empty", got)
+	cases := []struct {
+		name string
+		conn driver.Conn
+	}{
+		{"nil", nil},
+		{"pointer Driver did not open", &foreignConn{}},
+		{"pointer outside the heap", &staticConn},
+		{"not a pointer", foreignConn{}},
+	}
+	for _, tc := range cases {
+		if got := Remote(tc.conn); got != "" {
+			t.Errorf("Remote(%s) = %q, want empty", tc.name, got)
+		}
 	}
 }
 

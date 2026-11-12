@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sync"
 	"time"
+	"weak"
 
 	"github.com/lib/pq"
 )
@@ -21,17 +22,33 @@ const Name = "pqdial"
 
 func init() { sql.Register(Name, Driver{}) }
 
-// remotes maps the pointer of every connection Open returned to its dialed
-// address. A driver.Conn has no close hook short of wrapping it, and the pool
-// hands the same physical connection to successive sql.Conn handles, so a
-// lookup must stay answerable for the connection's lifetime. The key is the
-// pointer value, not the connection, so the map does not pin lib/pq's conn
-// and its read buffer; a finalizer drops the entry once the connection is
-// collected. Go frees an object only after its finalizer has run, so a new
-// connection cannot reuse the address of an entry that is still present.
-var remotes sync.Map
+// remotes maps every connection Open returned to its dialed address. A
+// driver.Conn has no close hook short of wrapping it, and the pool hands the
+// same physical connection to successive sql.Conn handles, so a lookup must
+// stay answerable for the connection's lifetime.
+//
+// The keys are weak pointers, so the map does not pin lib/pq's conn and its
+// read buffer, and a cleanup drops the entry once the connection is
+// collected. It has to be a cleanup and not a finalizer: lib/pq stores the
+// cancel watcher of a transaction begun under a cancelable context on the
+// conn, and that closure points back at the conn. An object in a reference
+// cycle is never finalized, and so never freed, while a cleanup runs for it
+// like for any other. A weak pointer names the object and not its address,
+// so the cleanup of a collected connection cannot drop the entry of a newer
+// one allocated in the same place.
+var remotes sync.Map // weak.Pointer[byte] -> string
 
-func key(conn driver.Conn) uintptr { return reflect.ValueOf(conn).Pointer() }
+// object is the address of the object conn points to, or nil when conn is not
+// a pointer. lib/pq's conn type is unexported and cannot be named here, so
+// the pointer is typed as the object's first byte: weak pointers and cleanups
+// only go by the address.
+func object(conn driver.Conn) *byte {
+	v := reflect.ValueOf(conn)
+	if v.Kind() != reflect.Pointer {
+		return nil
+	}
+	return (*byte)(v.UnsafePointer())
+}
 
 // Driver is a driver.Driver that opens lib/pq connections through a dialer
 // that records the remote address. It is otherwise pq.Driver.
@@ -44,18 +61,17 @@ func (Driver) Open(name string) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	remotes.Store(key(conn), r.remote)
-	runtime.SetFinalizer(conn, func(c driver.Conn) { remotes.Delete(key(c)) })
+	obj := object(conn)
+	key := weak.Make(obj)
+	remotes.Store(key, r.remote)
+	runtime.AddCleanup(obj, func(key weak.Pointer[byte]) { remotes.Delete(key) }, key)
 	return conn, nil
 }
 
 // Remote returns the address conn was dialed to, or "" when conn did not
 // come from Driver.
 func Remote(conn driver.Conn) string {
-	if conn == nil {
-		return ""
-	}
-	remote, _ := remotes.Load(key(conn))
+	remote, _ := remotes.Load(weak.Make(object(conn)))
 	s, _ := remote.(string)
 	return s
 }
