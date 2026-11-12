@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -475,5 +478,54 @@ func TestRemoteSuffix(t *testing.T) {
 	}
 	if got := remoteSuffix(ctx, remoteWorkloader{remote: "10.0.0.1:5432"}); got != " via 10.0.0.1:5432" {
 		t.Errorf("remote = %q, want \" via 10.0.0.1:5432\"", got)
+	}
+}
+
+// hoppingWorkloader reports remotes[n] as its address after n Run calls, the
+// way a workload that refreshes its connection inside Run does.
+type hoppingWorkloader struct {
+	fakeWorkloader
+	remotes []string
+	runs    int
+}
+
+func (w *hoppingWorkloader) Run(context.Context, int) error { w.runs++; return nil }
+func (w *hoppingWorkloader) ThreadRemote(context.Context) string {
+	return w.remotes[min(w.runs, len(w.remotes)-1)]
+}
+
+func TestRunLoop_LogsEachAddressChange(t *testing.T) {
+	withGlobals(t, 1, 4, false, false, 10*time.Second, false)
+	withTxnTimeout(t, 0)
+
+	// logEvent writes to os.Stdout.
+	r, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdout
+	os.Stdout = wr
+	// Connected via A; the second and third Run stay on B; the fourth moves to C.
+	fake := &hoppingWorkloader{remotes: []string{"A:1", "B:1", "B:1", "B:1", "C:1"}}
+	loopErr := runLoop(context.Background(), fake, "run", 7, 4)
+	os.Stdout = orig
+	wr.Close()
+	out, _ := io.ReadAll(r)
+	if loopErr != nil {
+		t.Fatalf("runLoop() = %v, want nil", loopErr)
+	}
+
+	got := string(out)
+	for _, want := range []string{
+		"run worker 7 connected via A:1\n",
+		"run worker 7 moved from A:1 to B:1 after 0 iterations\n",
+		"run worker 7 moved from B:1 to C:1 after 3 iterations\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output lacks %q:\n%s", want, got)
+		}
+	}
+	if n := strings.Count(got, "moved from"); n != 2 {
+		t.Errorf("%d move lines, want 2 (an unchanged address is not logged):\n%s", n, got)
 	}
 }
