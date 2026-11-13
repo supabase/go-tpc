@@ -1,39 +1,14 @@
 package util
 
 import (
-	"bufio"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/supabase/go-tpc/internal/tpctest"
 )
-
-// captureStdout redirects os.Stdout to a pipe for the duration of f and
-// returns every line f wrote to it.
-func captureStdout(t *testing.T, f func()) []string {
-	t.Helper()
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := os.Stdout
-	os.Stdout = w
-
-	f()
-
-	os.Stdout = old
-	w.Close()
-
-	var lines []string
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	return lines
-}
 
 var milestoneLineRE = regexp.MustCompile(`^test: (\d+)% \(\d+/\d+\)$`)
 
@@ -41,7 +16,7 @@ func TestProgressNonInteractiveMilestones(t *testing.T) {
 	// os.Stdout is a pipe (not a terminal) for the whole test, so Progress
 	// detects non-interactive mode and prints one line per 10% milestone.
 	var p *Progress
-	lines := captureStdout(t, func() {
+	lines := tpctest.CaptureStdoutLines(t, func() {
 		p = NewProgress("test", 100)
 
 		var wg sync.WaitGroup
@@ -85,7 +60,7 @@ func TestProgressInteractiveRedraw(t *testing.T) {
 	// reachable in tests; term.IsTerminal itself is a thin, trusted stdlib-
 	// adjacent wrapper and isn't what this test is checking.
 	var p *Progress
-	lines := captureStdout(t, func() {
+	lines := tpctest.CaptureStdoutLines(t, func() {
 		p = &Progress{label: "test", total: 10, interactive: true}
 		p.Add(10) // completes in one call
 	})
@@ -100,7 +75,7 @@ func TestProgressInteractiveRedraw(t *testing.T) {
 }
 
 func TestProgressStopsAtTotal(t *testing.T) {
-	lines := captureStdout(t, func() {
+	lines := tpctest.CaptureStdoutLines(t, func() {
 		p := NewProgress("test", 10)
 		p.Add(10)
 		// Further Add calls after completion must be no-ops.
