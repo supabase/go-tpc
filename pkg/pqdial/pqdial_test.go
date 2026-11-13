@@ -3,21 +3,20 @@ package pqdial
 import (
 	"context"
 	"database/sql/driver"
-	"encoding/binary"
-	"io"
+	"fmt"
 	"net"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+	"weak"
+
+	"github.com/supabase/go-tpc/internal/tpctest"
 )
 
-// servePostgres accepts connections and answers each startup message with
-// AuthenticationOk and ReadyForQuery: enough for lib/pq to hand back an open
-// connection. After that it answers simple queries the way a server does for
-// BEGIN and COMMIT, which is all a transaction with no statements sends, and
-// hangs up on any other message (lib/pq's Terminate on Close among them).
-func servePostgres(t *testing.T) net.Addr {
+// hangUp starts a server that accepts connections and closes each at once, so
+// lib/pq's startup on it fails after a dial that succeeded.
+func hangUp(t *testing.T) net.Addr {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -30,37 +29,7 @@ func servePostgres(t *testing.T) net.Addr {
 			if err != nil {
 				return
 			}
-			go func() {
-				defer c.Close()
-				var length [4]byte
-				if _, err := io.ReadFull(c, length[:]); err != nil {
-					return
-				}
-				if _, err := io.CopyN(io.Discard, c, int64(binary.BigEndian.Uint32(length[:]))-4); err != nil {
-					return
-				}
-				// 'R' AuthenticationOk, then 'Z' ReadyForQuery (idle).
-				c.Write([]byte{'R', 0, 0, 0, 8, 0, 0, 0, 0, 'Z', 0, 0, 0, 5, 'I'})
-				for {
-					var header [5]byte // message type, then length
-					if _, err := io.ReadFull(c, header[:]); err != nil || header[0] != 'Q' {
-						return
-					}
-					query := make([]byte, binary.BigEndian.Uint32(header[1:])-4)
-					if _, err := io.ReadFull(c, query); err != nil {
-						return
-					}
-					// 'C' CommandComplete with the command tag, then 'Z'
-					// ReadyForQuery: in a transaction after BEGIN, idle after
-					// COMMIT.
-					tag, status := "COMMIT", byte('I')
-					if strings.HasPrefix(string(query), "BEGIN") {
-						tag, status = "BEGIN", 'T'
-					}
-					reply := append([]byte{'C', 0, 0, 0, byte(4 + len(tag) + 1)}, tag...)
-					c.Write(append(reply, 0, 'Z', 0, 0, 0, 5, status))
-				}
-			}()
+			c.Close()
 		}
 	}()
 	return ln.Addr()
@@ -83,6 +52,19 @@ func beginCommit(t *testing.T, conn driver.Conn) {
 	}
 }
 
+// forgotten reports whether the entry under key goes away, giving the garbage
+// collector and the cleanup that follows it a few seconds to get there.
+func forgotten(key weak.Pointer[byte]) bool {
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if _, ok := remotes.Load(key); !ok {
+			return true
+		}
+		runtime.GC()
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
 func TestOpen_RecordsRemoteAndForgetsCollectedConn(t *testing.T) {
 	cases := []struct {
 		name string
@@ -93,11 +75,11 @@ func TestOpen_RecordsRemoteAndForgetsCollectedConn(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			addr := servePostgres(t)
-			before := entries()
+			addr := tpctest.ServePostgres(t)
 			// Open, use and close in a helper so no reference to the
-			// connection survives on this frame when the GC runs.
-			func() {
+			// connection survives on this frame when the GC runs. The weak
+			// key it returns does not keep the connection alive.
+			key := func() weak.Pointer[byte] {
 				conn, err := Driver{}.Open("postgres://u@" + addr.String() + "/d?sslmode=disable")
 				if err != nil {
 					t.Fatal(err)
@@ -109,36 +91,60 @@ func TestOpen_RecordsRemoteAndForgetsCollectedConn(t *testing.T) {
 				if got := Remote(conn); got != addr.String() {
 					t.Errorf("Remote = %q, want %q", got, addr)
 				}
-				if got := entries(); got != before+1 {
-					t.Errorf("remotes has %d entries after Open, want %d", got, before+1)
-				}
 				conn.Close()
+				return weak.Make(object(conn))
 			}()
-			for i := 0; i < 20 && entries() != before; i++ {
-				runtime.GC()
-				time.Sleep(10 * time.Millisecond)
+			if !forgotten(key) {
+				t.Error("the entry is still there after the connection should have been collected")
 			}
-			if got := entries(); got != before {
-				t.Errorf("remotes has %d entries after the connection was collected, want %d", got, before)
+		})
+	}
+}
+
+func TestOpen_RecordsTheHostLibpqEndedUpOn(t *testing.T) {
+	cases := []struct {
+		name  string
+		order func(good, bad net.Addr) []net.Addr
+	}{
+		// lib/pq dials bad, fails the startup there, then dials good.
+		{"after a host whose startup failed", func(good, bad net.Addr) []net.Addr { return []net.Addr{bad, good} }},
+		// lib/pq never gets to the second host.
+		{"first host", func(good, bad net.Addr) []net.Addr { return []net.Addr{good, bad} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			good, bad := tpctest.ServePostgres(t), hangUp(t)
+			var hosts, ports []string
+			for _, addr := range tc.order(good, bad) {
+				host, port, err := net.SplitHostPort(addr.String())
+				if err != nil {
+					t.Fatal(err)
+				}
+				hosts, ports = append(hosts, host), append(ports, port)
+			}
+			conn, err := Driver{}.Open(fmt.Sprintf("host=%s port=%s user=u dbname=d sslmode=disable connect_timeout=5",
+				strings.Join(hosts, ","), strings.Join(ports, ",")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if got := Remote(conn); got != good.String() {
+				t.Errorf("Remote = %q, want %q, the host the connection is to", got, good)
 			}
 		})
 	}
 }
 
 func TestRecorder_KeepsRemoteAddress(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
+	addr := hangUp(t)
 	r := &recorder{}
-	conn, err := r.DialContext(context.Background(), "tcp", ln.Addr().String())
+	conn, err := r.DialContext(context.Background(), "tcp", addr.String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if r.remote != ln.Addr().String() {
-		t.Errorf("remote = %q, want %q", r.remote, ln.Addr())
+	if r.remote != addr.String() {
+		t.Errorf("remote = %q, want %q", r.remote, addr)
 	}
 }
 
@@ -152,27 +158,47 @@ func TestRecorder_DialFailureRecordsNothing(t *testing.T) {
 	}
 }
 
-func TestOpen_FailedHandshakeLeavesNoEntry(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+// lib/pq dials its cancel requests through the connection's dialer after Open
+// returned, from other goroutines. They must not touch what was recorded.
+func TestRecorder_StopsRecordingOnceDone(t *testing.T) {
+	first, later := hangUp(t), hangUp(t)
+	r := &recorder{}
+	conn, err := r.Dial("tcp", first.String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			c.Close()
+	conn.Close()
+	if got := r.done(); got != first.String() {
+		t.Fatalf("done() = %q, want %q", got, first)
+	}
+
+	dials := map[string]func() (net.Conn, error){
+		"Dial":        func() (net.Conn, error) { return r.Dial("tcp", later.String()) },
+		"DialTimeout": func() (net.Conn, error) { return r.DialTimeout("tcp", later.String(), 5*time.Second) },
+		"DialContext": func() (net.Conn, error) { return r.DialContext(context.Background(), "tcp", later.String()) },
+	}
+	for name, dial := range dials {
+		conn, err := dial()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
 		}
-	}()
+		conn.Close()
+		if r.remote != first.String() {
+			t.Fatalf("remote = %q after a later %s, want it left at %q", r.remote, name, first)
+		}
+	}
+}
+
+func TestOpen_FailedHandshakeLeavesNoEntry(t *testing.T) {
+	addr := hangUp(t)
 	before := entries()
-	_, err = Driver{}.Open("postgres://u@" + ln.Addr().String() + "/d?sslmode=disable&connect_timeout=2")
+	_, err := Driver{}.Open("postgres://u@" + addr.String() + "/d?sslmode=disable&connect_timeout=2")
 	if err == nil {
 		t.Fatal("expected Open against a server that hangs up to fail")
 	}
-	if got := entries(); got != before {
+	// Not "!=": entries of connections earlier tests opened may be collected
+	// at any time.
+	if got := entries(); got > before {
 		t.Errorf("remotes has %d entries after a failed Open, had %d before", got, before)
 	}
 }
@@ -196,6 +222,32 @@ func TestRemote_UnknownConnection(t *testing.T) {
 		if got := Remote(tc.conn); got != "" {
 			t.Errorf("Remote(%s) = %q, want empty", tc.name, got)
 		}
+	}
+}
+
+func TestRemember(t *testing.T) {
+	// A pointer is recorded, and forgotten once it is collected.
+	key := func() weak.Pointer[byte] {
+		conn := &foreignConn{}
+		remember(conn, "10.0.0.1:5432")
+		if got := Remote(conn); got != "10.0.0.1:5432" {
+			t.Errorf("Remote = %q, want the remembered address", got)
+		}
+		return weak.Make(object(conn))
+	}()
+	if !forgotten(key) {
+		t.Error("the entry is still there after the connection should have been collected")
+	}
+
+	// A connection that is not a pointer cannot be keyed: nothing is
+	// recorded, and nothing panics.
+	before := entries()
+	remember(foreignConn{}, "10.0.0.1:5432")
+	if got := Remote(foreignConn{}); got != "" {
+		t.Errorf("Remote of a non-pointer connection = %q, want empty", got)
+	}
+	if got := entries(); got > before {
+		t.Errorf("remotes has %d entries after remembering a non-pointer connection, had %d before", got, before)
 	}
 }
 

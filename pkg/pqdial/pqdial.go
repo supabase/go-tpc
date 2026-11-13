@@ -1,6 +1,12 @@
 // Package pqdial opens lib/pq connections and remembers the address each one
 // was dialed to, so a worker can report which endpoint (for a hostname with
 // several addresses, which load-balancer node) its connection landed on.
+//
+// The address is the peer of the TCP connection, which is as far as a client
+// can see. Behind a proxying load balancer it names the proxy and not the
+// server behind it, so workers routed to different backends can report the
+// same address. Telling those apart takes the server's own word, for example
+// the label a --conn-admit-sql query returns (see package connadmit).
 package pqdial
 
 import (
@@ -61,11 +67,21 @@ func (Driver) Open(name string) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	obj := object(conn)
-	key := weak.Make(obj)
-	remotes.Store(key, r.remote)
-	runtime.AddCleanup(obj, func(key weak.Pointer[byte]) { remotes.Delete(key) }, key)
+	remember(conn, r.done())
 	return conn, nil
+}
+
+// remember records remote as the address conn was dialed to, for as long as
+// conn is alive. A conn that is not a pointer has no identity to key on and
+// is not recorded; lib/pq's always is one.
+func remember(conn driver.Conn, remote string) {
+	obj := object(conn)
+	if obj == nil {
+		return
+	}
+	key := weak.Make(obj)
+	remotes.Store(key, remote)
+	runtime.AddCleanup(obj, func(key weak.Pointer[byte]) { remotes.Delete(key) }, key)
 }
 
 // Remote returns the address conn was dialed to, or "" when conn did not
@@ -77,12 +93,30 @@ func Remote(conn driver.Conn) string {
 }
 
 // recorder dials with net.Dialer defaults, as lib/pq does, and keeps the
-// remote address of the last connection it made. lib/pq dials on the goroutine
-// that called Open and may dial more than once for one Open (several hosts,
-// target_session_attrs); the connection it keeps is the last one dialed.
+// remote address of the last connection it made while Open was running.
+// lib/pq may dial more than once for one Open (several hosts, an sslmode
+// fallback, target_session_attrs), all on the goroutine that called Open; the
+// connection it keeps is the last one dialed.
+//
+// lib/pq goes on dialing through the recorder after Open has returned: every
+// cancel request it sends for the connection is a new dial, made from a
+// goroutine watching the query's context, and a transaction and a statement
+// in it that share an expired context each send one at the same time. Those
+// dials are not the connection, and recording them would be a data race, so
+// done turns recording off. Open calls it before it hands the connection out,
+// which is before any of those goroutines can exist.
 type recorder struct {
-	d      net.Dialer
-	remote string
+	d       net.Dialer
+	remote  string
+	stopped bool
+}
+
+// done stops the recording and returns the address of the last connection
+// dialed. It is the only way the address is read, so it cannot be read
+// without also being frozen.
+func (r *recorder) done() string {
+	r.stopped = true
+	return r.remote
 }
 
 func (r *recorder) Dial(network, address string) (net.Conn, error) {
@@ -100,6 +134,8 @@ func (r *recorder) DialContext(ctx context.Context, network, address string) (ne
 	if err != nil {
 		return nil, err
 	}
-	r.remote = conn.RemoteAddr().String()
+	if !r.stopped {
+		r.remote = conn.RemoteAddr().String()
+	}
 	return conn, nil
 }
