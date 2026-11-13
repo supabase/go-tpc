@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	sqldrv "database/sql/driver"
 	"net/url"
 	"reflect"
+	"slices"
 	"testing"
 
+	"github.com/supabase/go-tpc/internal/tpctest"
 	"github.com/supabase/go-tpc/pkg/connadmit"
 	"github.com/supabase/go-tpc/pkg/pqdial"
+	"github.com/supabase/go-tpc/pkg/workload"
 )
 
 func TestApplyDirectSSLWorkaround_PassthroughWithoutDirectNegotiation(t *testing.T) {
@@ -42,6 +46,42 @@ func TestApplyDirectSSLWorkaround_RewritesSslmodeForDirectNegotiation(t *testing
 func TestApplyDirectSSLWorkaround_InvalidConnParams(t *testing.T) {
 	if _, err := applyDirectSSLWorkaround("%zz"); err == nil {
 		t.Fatal("expected error for invalid conn-params")
+	}
+}
+
+// Whichever way newDB builds the pool (one target or several, with or without
+// --conn-admit-sql), a worker must be able to learn where its connection was
+// dialed to.
+func TestNewDB_EveryPathRecordsTheDialedAddress(t *testing.T) {
+	admit := &connadmit.Admitter{SQL: "SELECT true", MaxRejections: 50}
+	cases := []struct {
+		name    string
+		targets int
+		admit   *connadmit.Admitter
+	}{
+		{"one target, no flag", 1, nil},
+		{"two targets, no flag", 2, nil},
+		{"one target, flag set", 1, admit},
+		{"two targets, flag set", 2, admit},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var targets []string
+			for range tc.targets {
+				targets = append(targets, tpctest.ServePostgres(t).String())
+			}
+			db, err := newDB(targets, pgDriver, "u", "secret", "d", "sslmode=disable", tc.admit)
+			if err != nil {
+				t.Fatalf("newDB: %v", err)
+			}
+			defer db.Close()
+
+			s := workload.NewTpcState(context.Background(), db)
+			defer s.Conn.Close()
+			if !slices.Contains(targets, s.Remote) {
+				t.Errorf("Remote = %q, want one of the targets %v", s.Remote, targets)
+			}
+		})
 	}
 }
 
