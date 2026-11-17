@@ -274,6 +274,12 @@ func getTPCCState(ctx context.Context) *tpccState {
 	return s
 }
 
+// ThreadRemote reports the address the thread's connection was dialed to,
+// current as of the last connection refresh; see workload.TpcState.Remote.
+func (w *Workloader) ThreadRemote(ctx context.Context) string {
+	return getTPCCState(ctx).Remote
+}
+
 // Run implements Workloader interface
 func (w *Workloader) Run(ctx context.Context, threadID int) (err error) {
 	defer func() {
@@ -369,7 +375,7 @@ func (w *Workloader) Run(ctx context.Context, threadID int) (err error) {
 		// order) - instead, refresh the connection for next time and treat
 		// this transaction the same as an uncommitted conflict above: it
 		// didn't count as completed, move on.
-		origErr := err
+		origErr, oldRemote := err, s.Remote
 		s.closeAllStmts()
 		if refreshErr := s.RefreshConn(ctx); refreshErr != nil {
 			return fmt.Errorf("connection refresh after connection error failed (thread %d): %w (original error: %v)", threadID, refreshErr, origErr)
@@ -378,7 +384,13 @@ func (w *Workloader) Run(ctx context.Context, threadID int) (err error) {
 		// Unlike the transient-conflict above a dead connection is rare
 		// and operationally significant, e.g. a replica failover or a
 		// backend killed by an admin, so this is always logged.
-		util.StdErrLogger.Printf("[tpcc] %s transaction failed due to a connection error, refreshed connection and continuing: %v", txn.name, origErr)
+		// Name the address that failed and the one the redial landed on, when
+		// the driver records them (see workload.TpcState.Remote).
+		remotes := ""
+		if oldRemote != "" {
+			remotes = fmt.Sprintf(" (was via %s, now via %s)", oldRemote, s.Remote)
+		}
+		util.StdErrLogger.Printf("[tpcc] %s transaction failed due to a connection error, refreshed connection%s and continuing: %v", txn.name, remotes, origErr)
 		err = nil
 	}
 

@@ -8,33 +8,9 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/supabase/go-tpc/internal/tpctest"
 	"github.com/supabase/go-tpc/pkg/measurement"
 )
-
-// captureStdout redirects os.Stdout to a pipe for the duration of f and
-// returns every line f wrote to it.
-func captureStdout(t *testing.T, f func()) []string {
-	t.Helper()
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := os.Stdout
-	os.Stdout = w
-
-	f()
-
-	os.Stdout = old
-	w.Close()
-
-	var lines []string
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	return lines
-}
 
 // TestOutputRtMeasurement_QuietTickStillRecordsSideEffects covers the bug
 // fixed alongside quietTick: a prior change silenced the whole periodic tick
@@ -46,7 +22,7 @@ func TestOutputRtMeasurement_QuietTickStillRecordsSideEffects(t *testing.T) {
 	m := measurement.NewMeasurement(measurement.WithRawSamplesFile(path))
 	m.Measure("new_order", 10*time.Millisecond, nil)
 
-	lines := captureStdout(t, func() {
+	lines := tpctest.CaptureStdoutLines(t, func() {
 		m.Output(false, "plain", outputRtMeasurement)
 	})
 	if len(lines) != 0 {
@@ -73,7 +49,7 @@ func TestOutputRtMeasurement_SummaryAlwaysPrints(t *testing.T) {
 	m := measurement.NewMeasurement()
 	m.Measure("new_order", 10*time.Millisecond, nil)
 
-	lines := captureStdout(t, func() {
+	lines := tpctest.CaptureStdoutLines(t, func() {
 		m.Output(true, "plain", outputRtMeasurement)
 	})
 	if len(lines) == 0 {

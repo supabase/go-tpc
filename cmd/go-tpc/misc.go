@@ -162,6 +162,24 @@ func runTransaction(runCtx context.Context, w workload.Workloader, index int) (t
 	return ctx.Err() != nil, err
 }
 
+// threadRemote is the address the worker's connection is currently dialed to
+// (see workload.TpcState.Remote), or "" for a workload that does not know it.
+func threadRemote(ctx context.Context, w workload.Workloader) string {
+	if r, ok := w.(interface{ ThreadRemote(context.Context) string }); ok {
+		return r.ThreadRemote(ctx)
+	}
+	return ""
+}
+
+// remoteSuffix is " via <address>" when threadRemote knows the address, so
+// per-worker counts can be grouped by endpoint; otherwise "".
+func remoteSuffix(ctx context.Context, w workload.Workloader) string {
+	if remote := threadRemote(ctx, w); remote != "" {
+		return " via " + remote
+	}
+	return ""
+}
+
 // runLoop drives the "run" action: it repeats transactions until count is
 // reached (count <= 0 means unbounded) or ctx ends.
 //
@@ -172,6 +190,10 @@ func runTransaction(runCtx context.Context, w workload.Workloader, index int) (t
 // returns use the real, cancelable ctx to decide whether to stop.
 func runLoop(ctx context.Context, w workload.Workloader, action string, index, count int) error {
 	runCtx := context.WithoutCancel(ctx)
+	remote := threadRemote(ctx, w)
+	if remote != "" {
+		logEvent("%s worker %d connected via %s", action, index, remote)
+	}
 
 	// consecutiveFailures drives the backoff before the next retry (see
 	// waitForBackoff) and resets to 0 the moment a transaction succeeds again.
@@ -181,19 +203,29 @@ func runLoop(ctx context.Context, w workload.Workloader, action string, index, c
 		// Check if timeout has occurred before starting next query
 		select {
 		case <-ctx.Done():
-			logEvent("%s worker %d stopped due to timeout after %d iterations", action, index, i)
+			logEvent("%s worker %d stopped due to timeout after %d iterations%s", action, index, i, remoteSuffix(ctx, w))
 			return nil
 		default:
 		}
 
 		timedOut, err := runTransaction(runCtx, w, index)
+		// A workload may replace its connection inside Run (a periodic
+		// refresh before the transaction, or a redial after a connection
+		// error), and the new one can land on another address. Log each move
+		// with the iteration count, so a worker's iterations can be split by
+		// endpoint: the i iterations before this one completed on the old
+		// address.
+		if now := threadRemote(ctx, w); now != remote {
+			logEvent("%s worker %d moved from %s to %s after %d iterations", action, index, remote, now, i)
+			remote = now
+		}
 		if err == nil {
 			consecutiveFailures = 0
 			continue
 		}
 
 		if ctx.Err() != nil {
-			logEvent("%s worker %d stopped due to timeout: %v", action, index, err)
+			logEvent("%s worker %d stopped due to timeout%s: %v", action, index, remoteSuffix(ctx, w), err)
 			return nil // Don't treat the benchmark deadline as an error
 		}
 

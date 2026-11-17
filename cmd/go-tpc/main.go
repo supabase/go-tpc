@@ -20,6 +20,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/supabase/go-tpc/pkg/connadmit"
+	"github.com/supabase/go-tpc/pkg/pqdial"
 	"github.com/supabase/go-tpc/pkg/util"
 
 	// mysql package
@@ -139,7 +140,8 @@ func newDB(targets []string, driver string, user string, password string, dbName
 				dsn = dsn + "?" + params
 			}
 			names[i] = dsn
-			drv = &pq.Driver{}
+			// pqdial remembers which address each connection was dialed to.
+			drv = pqdial.Driver{}
 		default:
 			panic(fmt.Errorf("unknown driver: %q", driver))
 		}
@@ -156,6 +158,9 @@ func newDB(targets []string, driver string, user string, password string, dbName
 		return sql.OpenDB(admit.Connector(inner, name)), nil
 	}
 	if len(names) == 1 {
+		if driver == pgDriver {
+			driver = pqdial.Name
+		}
 		return sql.Open(driver, names[0])
 	}
 	drvName := driver + "+" + hex.EncodeToString(hash.Sum(nil))
