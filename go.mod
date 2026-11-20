@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/HdrHistogram/hdrhistogram-go v1.4.0
-	github.com/go-sql-driver/mysql v1.10.1
+	github.com/go-sql-driver/mysql v1.10.2
 	github.com/lib/pq v1.12.3
 	github.com/olekukonko/tablewriter v1.1.5
 	github.com/prometheus/client_golang v1.25.0
